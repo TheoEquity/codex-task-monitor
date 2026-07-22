@@ -34,8 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sizeObserver = model.$items
             .combineLatest(model.$errorMessage)
             .sink { [weak self, weak panel] items, errorMessage in
-                guard let self, let panel else { return }
-                self.resize(panel, itemCount: items.count, hasError: errorMessage != nil)
+                let itemCount = items.count
+                let hasError = errorMessage != nil
+                DispatchQueue.main.async { [weak self, weak panel] in
+                    guard let self, let panel else { return }
+                    self.resize(panel, itemCount: itemCount, hasError: hasError)
+                }
             }
 
         panel.orderFrontRegardless()
@@ -135,7 +139,8 @@ final class MonitorModel: NSObject, ObservableObject {
             let updatedItems = try monitor.scan(
                 baseline: baseline,
                 adoptedTurnIDs: preferences.adoptedTurnIDs,
-                dismissedTurnIDs: preferences.dismissedTurnIDs
+                dismissedTurnIDs: preferences.dismissedTurnIDs,
+                dismissedItemIDs: preferences.dismissedItemIDs
             )
             if items != updatedItems { items = updatedItems }
 
@@ -161,7 +166,7 @@ final class MonitorModel: NSObject, ObservableObject {
 
     func dismiss(_ item: MonitorItem) {
         guard item.state == .waiting else { return }
-        preferences.dismiss(turnID: item.turnID)
+        preferences.dismiss(itemID: item.id)
         refresh()
     }
 
@@ -195,21 +200,32 @@ private struct MonitorView: View {
             header
             if !model.items.isEmpty {
                 Divider().overlay(.white.opacity(0.12))
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(model.items) { item in
-                            TaskRow(
-                                item: item,
-                                open: { model.open(item) },
-                                dismiss: { model.dismiss(item) }
-                            )
-                            if item.id != model.items.last?.id {
-                                Divider().overlay(.white.opacity(0.08))
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.items) { item in
+                                TaskRow(
+                                    item: item,
+                                    open: { model.open(item) },
+                                    dismiss: { model.dismiss(item) }
+                                )
+                                .id(item.id)
+                                if item.id != model.items.last?.id {
+                                    Divider().overlay(.white.opacity(0.08))
+                                }
                             }
                         }
                     }
+                    .onChange(of: model.items.map(\.id)) { oldIDs, newIDs in
+                        guard let insertedID = MonitorListUpdate.insertedID(
+                            from: oldIDs,
+                            to: newIDs
+                        ) else {
+                            return
+                        }
+                        proxy.scrollTo(insertedID, anchor: .top)
+                    }
                 }
-                .id(model.items.map(\.id))
             }
             if let errorMessage = model.errorMessage {
                 Text(errorMessage)
@@ -264,7 +280,7 @@ private struct TaskRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(item.state == .running ? Color.blue : Color.orange)
+                .fill(item.state == .running ? Color.blue : Color.green)
                 .frame(width: 8, height: 8)
                 .accessibilityLabel(item.state == .running ? "运行中" : "等待处理")
 

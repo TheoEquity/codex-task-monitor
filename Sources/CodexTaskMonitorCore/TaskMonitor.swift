@@ -32,7 +32,8 @@ public final class TaskMonitor {
     public func scan(
         baseline: Date,
         adoptedTurnIDs: Set<String> = [],
-        dismissedTurnIDs: Set<String> = []
+        dismissedTurnIDs: Set<String> = [],
+        dismissedItemIDs: Set<String> = []
     ) throws -> [MonitorItem] {
         // ponytail: one-hour lookback only recovers first-launch turns; new turns have no TTL.
         let oldestRelevantUpdate = baseline.addingTimeInterval(-3_600)
@@ -46,7 +47,7 @@ public final class TaskMonitor {
                 return nil
             }
 
-            return MonitorItem(
+            let item = MonitorItem(
                 threadID: thread.id,
                 turnID: event.turnID,
                 title: thread.title.isEmpty ? "New chat" : thread.title,
@@ -54,6 +55,7 @@ public final class TaskMonitor {
                 eventDate: event.activityDate,
                 state: state
             )
+            return dismissedItemIDs.contains(item.id) ? nil : item
         }
         .sorted { $0.eventDate > $1.eventDate }
     }

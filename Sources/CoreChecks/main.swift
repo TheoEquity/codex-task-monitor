@@ -13,6 +13,27 @@ expect(
     MonitorPanelLayout.height(itemCount: 8, hasError: true) == 458,
     "panel height caps the list at six rows and includes the error strip"
 )
+expect(
+    MonitorListUpdate.insertedID(
+        from: ["first", "handled", "last"],
+        to: ["first", "last"]
+    ) == nil,
+    "removing a task does not request list scrolling"
+)
+expect(
+    MonitorListUpdate.insertedID(
+        from: ["first", "last"],
+        to: ["first", "new", "last"]
+    ) == "new",
+    "adding a task targets the inserted row"
+)
+expect(
+    MonitorListUpdate.insertedID(
+        from: ["first", "handled", "last"],
+        to: ["new", "first", "last"]
+    ) == nil,
+    "handling a task keeps the viewport stable when another task arrives"
+)
 
 expect(
     TaskState.resolve(
@@ -316,9 +337,26 @@ try Data((secondTurnRollout + partialSecondCompletion).utf8).write(to: rolloutUR
 items = try monitor.scan(baseline: baseline, dismissedTurnIDs: ["turn-1"])
 expect(items.first?.state == .running, "an appended partial line keeps the cached state")
 
-try Data((secondTurnRollout + partialSecondCompletion + "104}}\n").utf8).write(to: rolloutURL)
+let completedSecondTurnRollout = secondTurnRollout + partialSecondCompletion + "104}}\n"
+try Data(completedSecondTurnRollout.utf8).write(to: rolloutURL)
 items = try monitor.scan(baseline: baseline, dismissedTurnIDs: ["turn-1"])
 expect(items.first?.state == .waiting, "a completed appended line updates the cached state")
+
+let sameTurnRolloutURL = temporaryDirectory.appendingPathComponent("same-turn.jsonl")
+try Data(completedSecondTurnRollout.utf8).write(to: sameTurnRolloutURL)
+try insertVisibleThread(
+    into: databaseURL,
+    id: "same-turn",
+    rolloutPath: sameTurnRolloutURL.path
+)
+items = try monitor.scan(
+    baseline: baseline,
+    dismissedItemIDs: ["visible:turn-2"]
+)
+expect(
+    items.count == 1 && items[0].threadID == "same-turn",
+    "handling one task does not hide another thread with the same turn ID"
+)
 
 try FileManager.default.removeItem(at: rolloutURL)
 let unreadableMonitor = TaskMonitor(databaseURL: databaseURL)
@@ -333,14 +371,19 @@ expect(rejectedUnreadableFirstScan, "an unreadable first scan does not establish
 let defaultsSuite = "CodexTaskMonitorChecks.\(UUID().uuidString)"
 let defaults = UserDefaults(suiteName: defaultsSuite)!
 defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+defaults.set(["turn-legacy"], forKey: "dismissedTurnIDs")
 var preferences = MonitorPreferences(defaults: defaults)
 expect(preferences.baseline == nil, "preferences start without a baseline")
 preferences.initialize(baseline: baseline, adoptedTurnIDs: ["turn-adopted"])
-preferences.dismiss(turnID: "turn-finished")
+preferences.dismiss(itemID: "thread-finished:turn-finished")
 preferences = MonitorPreferences(defaults: defaults)
 expect(preferences.baseline == baseline, "preferences restore the baseline")
 expect(preferences.adoptedTurnIDs == ["turn-adopted"], "preferences restore adopted turns")
-expect(preferences.dismissedTurnIDs == ["turn-finished"], "preferences restore handled turns")
+expect(preferences.dismissedTurnIDs == ["turn-legacy"], "preferences retain legacy handled turns")
+expect(
+    preferences.dismissedItemIDs == ["thread-finished:turn-finished"],
+    "preferences restore the exact handled task"
+)
 
 print("Core checks passed")
 

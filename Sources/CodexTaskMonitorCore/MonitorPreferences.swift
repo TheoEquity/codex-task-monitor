@@ -4,6 +4,7 @@ public struct MonitorPreferences {
     public private(set) var baseline: Date?
     public private(set) var adoptedTurnIDs: Set<String>
     public private(set) var dismissedTurnIDs: Set<String>
+    public private(set) var dismissedItemIDs: Set<String>
 
     private let defaults: UserDefaults
 
@@ -12,6 +13,7 @@ public struct MonitorPreferences {
         baseline = defaults.object(forKey: Key.baseline) as? Date
         adoptedTurnIDs = Set(defaults.stringArray(forKey: Key.adoptedTurnIDs) ?? [])
         dismissedTurnIDs = Set(defaults.stringArray(forKey: Key.dismissedTurnIDs) ?? [])
+        dismissedItemIDs = Set(defaults.stringArray(forKey: Key.dismissedItemIDs) ?? [])
     }
 
     public mutating func initialize(baseline: Date, adoptedTurnIDs: Set<String>) {
@@ -22,14 +24,15 @@ public struct MonitorPreferences {
         defaults.set(adoptedTurnIDs.sorted(), forKey: Key.adoptedTurnIDs)
     }
 
-    public mutating func dismiss(turnID: String) {
-        dismissedTurnIDs.insert(turnID)
-        defaults.set(dismissedTurnIDs.sorted(), forKey: Key.dismissedTurnIDs)
+    public mutating func dismiss(itemID: String) {
+        dismissedItemIDs.insert(itemID)
+        defaults.set(dismissedItemIDs.sorted(), forKey: Key.dismissedItemIDs)
     }
 
     private enum Key {
         static let baseline = "monitorStartedAt"
         static let adoptedTurnIDs = "adoptedTurnIDs"
         static let dismissedTurnIDs = "dismissedTurnIDs"
+        static let dismissedItemIDs = "dismissedItemIDs"
     }
 }
