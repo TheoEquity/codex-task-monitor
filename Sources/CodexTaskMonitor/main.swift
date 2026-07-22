@@ -209,6 +209,7 @@ private struct MonitorView: View {
                         }
                     }
                 }
+                .id(model.items.map(\.id))
             }
             if let errorMessage = model.errorMessage {
                 Text(errorMessage)
