@@ -216,6 +216,7 @@ private struct MonitorView: View {
                             }
                         }
                     }
+                    .scrollIndicators(.visible)
                     .onChange(of: model.items.map(\.id)) { oldIDs, newIDs in
                         guard let insertedID = MonitorListUpdate.insertedID(
                             from: oldIDs,
