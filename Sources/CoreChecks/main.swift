@@ -4,6 +4,139 @@ import SQLite3
 
 let baseline = Date(timeIntervalSince1970: 100)
 let fractionalBaseline = Date(timeIntervalSince1970: 100.9)
+let threadID = "11111111-1111-4111-8111-111111111111"
+
+expect(
+    CodexThreadLink.openURL(threadID: threadID)?.absoluteString
+        == "codex://threads/11111111-1111-4111-8111-111111111111",
+    "Codex thread links use the supported deep-link route"
+)
+expect(
+    CodexThreadLink.openURL(threadID: "not-a-uuid") == nil,
+    "Codex thread links reject invalid thread IDs"
+)
+
+let sessionIndexData = Data(
+    """
+    {"id":"\(threadID)","thread_name":"Old title","updated_at":"2026-07-22T00:00:00Z"}
+    {"id":"22222222-2222-4222-8222-222222222222","thread_name":"Other task","updated_at":"2026-07-22T00:01:00Z"}
+    {"id":"\(threadID)","thread_name":"Sidebar title","updated_at":"2026-07-22T00:02:00Z"}
+    """.utf8
+)
+try expect(
+    try SessionIndex.threadName(for: threadID, in: sessionIndexData) == "Sidebar title",
+    "the session index uses the newest name for the exact thread UUID"
+)
+let partialSessionIndexData = sessionIndexData + Data(
+    (
+        "\n" + #"{"id":"22222222-2222-4222-8222-222222222222","thread_name":"#
+    ).utf8
+)
+try expect(
+    try SessionIndex.threadName(for: threadID, in: partialSessionIndexData) == "Sidebar title",
+    "an incomplete trailing session-index row keeps the last complete name"
+)
+expect(
+    SidebarTaskMatch.uniqueIndex(
+        for: "Sidebar title",
+        among: ["Other task", "Sidebar title"]
+    ) == 1,
+    "a unique sidebar title identifies its exact candidate"
+)
+expect(
+    SidebarTaskMatch.uniqueIndex(
+        for: "Sidebar title",
+        among: ["Sidebar title", "Other task", "Sidebar title"]
+    ) == nil,
+    "duplicate sidebar titles are rejected instead of guessing"
+)
+
+let globalStateData = Data(
+    """
+    {
+      "pinned-thread-ids": ["pinned-thread"],
+      "projectless-thread-ids": ["projectless-thread"],
+      "thread-project-assignments": {
+        "pinned-thread": {"projectId": "project-1"},
+        "project-thread": {"projectId": "project-1"}
+      },
+      "local-projects": {
+        "project-1": {"name": "DemoProject", "rootPaths": ["/tmp/DemoProject"]}
+      }
+    }
+    """.utf8
+)
+try expect(
+    try SidebarThreadGroup.resolve(threadID: "pinned-thread", in: globalStateData)
+        == .pinned,
+    "pinned threads resolve to the pinned sidebar group"
+)
+try expect(
+    try SidebarThreadGroup.resolve(threadID: "project-thread", in: globalStateData)
+        == .project(name: "DemoProject"),
+    "project threads resolve through their exact project assignment"
+)
+try expect(
+    try SidebarThreadGroup.resolve(threadID: "projectless-thread", in: globalStateData)
+        == .projectless,
+    "projectless threads resolve to the ungrouped task list"
+)
+expect(
+    SidebarThreadGroup.project(name: "DemoProject").listDescription
+        == "DemoProject中的已安排任务",
+    "project groups use the AX list description exposed by Codex"
+)
+
+let sidebarTargetIndexData = Data(
+    """
+    {"id":"project-thread","thread_name":"Assigned task"}
+    {"id":"implicit-project-thread","thread_name":"Implicit project task"}
+    """.utf8
+)
+try expect(
+    try SidebarTargetResolver.resolve(
+        threadID: "implicit-project-thread",
+        cwd: "/tmp/DemoProject",
+        sessionIndexData: sidebarTargetIndexData,
+        globalStateData: globalStateData
+    ) == SidebarTarget(
+        title: "Implicit project task",
+        group: .project(name: "DemoProject")
+    ),
+    "an exact unique project root recovers a missing thread assignment"
+)
+try expect(
+    try SidebarTargetResolver.resolve(
+        threadID: "missing-title-thread",
+        cwd: "/tmp/DemoProject",
+        sessionIndexData: sidebarTargetIndexData,
+        globalStateData: globalStateData
+    ) == nil,
+    "a missing UUID-to-title mapping is rejected instead of using a database title"
+)
+
+let ambiguousProjectStateData = Data(
+    """
+    {
+      "local-projects": {
+        "project-1": {"name": "First", "rootPaths": ["/tmp/shared"]},
+        "project-2": {"name": "Second", "rootPaths": ["/tmp/shared"]}
+      }
+    }
+    """.utf8
+)
+let ambiguousProjectIndexData = Data(
+    #"{"id":"ambiguous-thread","thread_name":"Ambiguous task"}"#.utf8
+)
+try expect(
+    try SidebarTargetResolver.resolve(
+        threadID: "ambiguous-thread",
+        cwd: "/tmp/shared",
+        sessionIndexData: ambiguousProjectIndexData,
+        globalStateData: ambiguousProjectStateData
+    ) == nil,
+    "multiple projects with the same root are rejected instead of guessed"
+)
 
 expect(
     MonitorPanelLayout.height(itemCount: 3, hasError: false) == 237,

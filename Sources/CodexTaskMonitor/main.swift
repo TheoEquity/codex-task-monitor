@@ -1,4 +1,5 @@
 import AppKit
+@preconcurrency import ApplicationServices
 import Combine
 import ServiceManagement
 import SwiftUI
@@ -99,14 +100,26 @@ final class MonitorModel: NSObject, ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let monitor: TaskMonitor
+    private let sidebarRevealer: CodexSidebarRevealer
     private let firstAttemptBaseline = Date(
         timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)
     )
     private var preferences = MonitorPreferences()
     private var timer: Timer?
+    private var scanErrorMessage: String?
+    private var actionErrorMessage: String?
+    private var sidebarRevealGeneration = 0
 
     init(databaseURL: URL) {
         monitor = TaskMonitor(databaseURL: databaseURL)
+        sidebarRevealer = CodexSidebarRevealer(
+            sessionIndexURL: databaseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("session_index.jsonl"),
+            globalStateURL: databaseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(".codex-global-state.json")
+        )
     }
 
     func start() {
@@ -144,24 +157,45 @@ final class MonitorModel: NSObject, ObservableObject {
             )
             if items != updatedItems { items = updatedItems }
 
-            let updatedErrorMessage = monitor.unreadableRolloutCount == 0
+            let updatedScanErrorMessage = monitor.unreadableRolloutCount == 0
                 ? nil
                 : "\(monitor.unreadableRolloutCount) 个任务暂时无法读取"
-            if errorMessage != updatedErrorMessage { errorMessage = updatedErrorMessage }
+            if scanErrorMessage != updatedScanErrorMessage {
+                scanErrorMessage = updatedScanErrorMessage
+                updateErrorMessage()
+            }
         } catch {
-            let updatedErrorMessage = (error as? LocalizedError)?.errorDescription
+            let updatedScanErrorMessage = (error as? LocalizedError)?.errorDescription
                 ?? "暂时无法读取 Codex 数据"
-            if errorMessage != updatedErrorMessage { errorMessage = updatedErrorMessage }
+            if scanErrorMessage != updatedScanErrorMessage {
+                scanErrorMessage = updatedScanErrorMessage
+                updateErrorMessage()
+            }
         }
     }
 
     func open(_ item: MonitorItem) {
-        guard let url = URL(string: "codex://threads/\(item.threadID)"),
+        sidebarRevealGeneration += 1
+        let generation = sidebarRevealGeneration
+        setActionError(nil)
+
+        guard let url = CodexThreadLink.openURL(threadID: item.threadID),
               NSWorkspace.shared.open(url)
         else {
-            errorMessage = "无法打开对应的 Codex 对话"
+            setActionError("无法打开对应的 Codex 对话")
             return
         }
+
+        guard CodexSidebarRevealer.requestAccessibilityPermission() else {
+            setActionError(CodexSidebarRevealError.accessibilityPermissionRequired.errorDescription)
+            return
+        }
+        revealSidebar(
+            threadID: item.threadID,
+            cwd: item.cwd,
+            generation: generation,
+            attempt: 0
+        )
     }
 
     func dismiss(_ item: MonitorItem) {
@@ -183,12 +217,59 @@ final class MonitorModel: NSObject, ObservableObject {
                 return
             }
         } catch {
-            if showErrors { errorMessage = "无法启用登录时启动：\(error.localizedDescription)" }
+            if showErrors {
+                setActionError("无法启用登录时启动：\(error.localizedDescription)")
+            }
         }
     }
 
     func quit() {
         NSApp.terminate(nil)
+    }
+
+    private func revealSidebar(
+        threadID: String,
+        cwd: String,
+        generation: Int,
+        attempt: Int
+    ) {
+        guard generation == sidebarRevealGeneration else { return }
+
+        do {
+            try sidebarRevealer.reveal(
+                threadID: threadID,
+                cwd: cwd
+            )
+            setActionError(nil)
+        } catch let error as CodexSidebarRevealError
+            where error.isRetryable && attempt < 19
+        {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.revealSidebar(
+                    threadID: threadID,
+                    cwd: cwd,
+                    generation: generation,
+                    attempt: attempt + 1
+                )
+            }
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription
+                ?? "已打开对话；暂时无法在侧栏定位"
+            setActionError(message)
+        }
+    }
+
+    private func setActionError(_ message: String?) {
+        guard actionErrorMessage != message else { return }
+        actionErrorMessage = message
+        updateErrorMessage()
+    }
+
+    private func updateErrorMessage() {
+        let updatedErrorMessage = actionErrorMessage ?? scanErrorMessage
+        if errorMessage != updatedErrorMessage {
+            errorMessage = updatedErrorMessage
+        }
     }
 }
 
@@ -320,5 +401,209 @@ private struct TaskRow: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 62)
+    }
+}
+
+private enum CodexSidebarRevealError: LocalizedError {
+    case accessibilityPermissionRequired
+    case ambiguousTask
+    case sessionIndexUnavailable
+    case sidebarStateUnavailable
+    case targetNotReady
+    case unsupportedSystem
+    case unsupportedCodexVersion
+
+    var isRetryable: Bool {
+        switch self {
+        case .sessionIndexUnavailable, .sidebarStateUnavailable, .targetNotReady:
+            return true
+        case .accessibilityPermissionRequired, .ambiguousTask,
+             .unsupportedSystem, .unsupportedCodexVersion:
+            return false
+        }
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .accessibilityPermissionRequired:
+            return "已打开对话；请允许辅助功能权限"
+        case .ambiguousTask:
+            return "已打开对话；侧栏有同名任务，未滚动"
+        case .sessionIndexUnavailable:
+            return "已打开对话；无法读取 Codex 会话索引"
+        case .sidebarStateUnavailable:
+            return "已打开对话；无法读取 Codex 侧栏状态"
+        case .targetNotReady:
+            return "已打开对话；暂时无法在侧栏定位"
+        case .unsupportedSystem:
+            return "当前 macOS 不支持侧栏定位"
+        case .unsupportedCodexVersion:
+            return "当前 Codex 版本不支持侧栏定位"
+        }
+    }
+}
+
+private struct CodexSidebarRevealer {
+    private static let codexBundleIdentifier = "com.openai.codex"
+    private static let maximumElementCount = 5_000
+
+    let sessionIndexURL: URL
+    let globalStateURL: URL
+
+    static func requestAccessibilityPermission() -> Bool {
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        return AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+    }
+
+    func reveal(threadID: String, cwd: String) throws {
+        guard #available(macOS 26.0, *) else {
+            throw CodexSidebarRevealError.unsupportedSystem
+        }
+        guard AXIsProcessTrusted() else {
+            throw CodexSidebarRevealError.accessibilityPermissionRequired
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: sessionIndexURL, options: .mappedIfSafe)
+        } catch {
+            throw CodexSidebarRevealError.sessionIndexUnavailable
+        }
+
+        let globalStateData: Data
+        do {
+            globalStateData = try Data(contentsOf: globalStateURL, options: .mappedIfSafe)
+        } catch {
+            throw CodexSidebarRevealError.sidebarStateUnavailable
+        }
+
+        let target: SidebarTarget
+        do {
+            guard let resolvedTarget = try SidebarTargetResolver.resolve(
+                threadID: threadID,
+                cwd: cwd,
+                sessionIndexData: data,
+                globalStateData: globalStateData
+            ) else {
+                throw CodexSidebarRevealError.targetNotReady
+            }
+            target = resolvedTarget
+        } catch let error as CodexSidebarRevealError {
+            throw error
+        } catch SidebarTargetResolutionError.sessionIndexChanged {
+            throw CodexSidebarRevealError.sessionIndexUnavailable
+        } catch SidebarTargetResolutionError.globalStateChanged {
+            throw CodexSidebarRevealError.sidebarStateUnavailable
+        } catch {
+            throw CodexSidebarRevealError.sidebarStateUnavailable
+        }
+
+        guard let application = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.codexBundleIdentifier)
+            .first(where: { !$0.isTerminated })
+        else {
+            throw CodexSidebarRevealError.targetNotReady
+        }
+
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        guard let focusedWindow = attribute(
+            applicationElement,
+            kAXFocusedWindowAttribute
+        ) else {
+            throw CodexSidebarRevealError.targetNotReady
+        }
+        guard let root = axElement(focusedWindow) else {
+            throw CodexSidebarRevealError.targetNotReady
+        }
+        let candidates = sidebarTaskTitles(
+            in: root,
+            matching: target.title,
+            listDescription: target.group.listDescription
+        )
+        guard let index = SidebarTaskMatch.uniqueIndex(
+            for: target.title,
+            among: candidates.map(\.title)
+        ) else {
+            if candidates.isEmpty {
+                throw CodexSidebarRevealError.targetNotReady
+            }
+            throw CodexSidebarRevealError.ambiguousTask
+        }
+
+        let action = NSAccessibility.Action.scrollToVisibleAction.rawValue as CFString
+        switch AXUIElementPerformAction(candidates[index].element, action) {
+        case .success:
+            return
+        case .cannotComplete, .invalidUIElement:
+            throw CodexSidebarRevealError.targetNotReady
+        case .actionUnsupported, .notImplemented:
+            throw CodexSidebarRevealError.unsupportedCodexVersion
+        default:
+            throw CodexSidebarRevealError.targetNotReady
+        }
+    }
+
+    private func sidebarTaskTitles(
+        in root: AXUIElement,
+        matching threadName: String,
+        listDescription: String
+    ) -> [(element: AXUIElement, title: String)] {
+        var queue = [root]
+        var index = 0
+        var matches: [(AXUIElement, String)] = []
+
+        while index < queue.count && index < Self.maximumElementCount {
+            let element = queue[index]
+            index += 1
+
+            if stringAttribute(element, kAXRoleAttribute) == kAXStaticTextRole,
+               stringAttribute(element, kAXValueAttribute) == threadName,
+               isInsideSidebarTaskList(element, description: listDescription)
+            {
+                matches.append((element, threadName))
+            }
+
+            if let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
+                queue.append(contentsOf: children)
+            }
+        }
+
+        return matches
+    }
+
+    private func isInsideSidebarTaskList(
+        _ element: AXUIElement,
+        description: String
+    ) -> Bool {
+        var current = element
+        for _ in 0..<6 {
+            guard let parent = axElement(attribute(current, kAXParentAttribute)) else {
+                return false
+            }
+            current = parent
+            if stringAttribute(current, kAXRoleAttribute) == kAXListRole,
+               stringAttribute(current, kAXDescriptionAttribute) == description
+            {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
+            return nil
+        }
+        return value
+    }
+
+    private func axElement(_ value: AnyObject?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeDowncast(value, to: AXUIElement.self)
+    }
+
+    private func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
+        attribute(element, name) as? String
     }
 }

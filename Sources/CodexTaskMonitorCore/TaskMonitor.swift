@@ -6,6 +6,7 @@ public struct MonitorItem: Identifiable, Equatable, Sendable {
     public let threadID: String
     public let turnID: String
     public let title: String
+    public let cwd: String
     public let projectName: String
     public let eventDate: Date
     public let state: TaskState
@@ -51,6 +52,7 @@ public final class TaskMonitor {
                 threadID: thread.id,
                 turnID: event.turnID,
                 title: thread.title.isEmpty ? "New chat" : thread.title,
+                cwd: thread.cwd,
                 projectName: URL(fileURLWithPath: thread.cwd).lastPathComponent,
                 eventDate: event.activityDate,
                 state: state
