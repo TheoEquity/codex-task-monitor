@@ -59,7 +59,10 @@ public enum ThreadStore {
             FROM threads
             WHERE archived = 0
               AND preview <> ''
-              AND COALESCE(thread_source, 'user') <> 'subagent'
+              AND (
+                COALESCE(thread_source, 'user') <> 'subagent'
+                OR source = 'vscode'
+              )
               AND updated_at_ms >= ?
             ORDER BY updated_at_ms DESC
             """
