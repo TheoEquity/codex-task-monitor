@@ -86,6 +86,10 @@ expect(
         == "DemoProject中的已安排任务",
     "project groups use the AX list description exposed by Codex"
 )
+expect(
+    SidebarThreadGroup.projectless.listDescription.isEmpty,
+    "projectless tasks use the empty AX list description exposed by Codex"
+)
 
 let sidebarTargetIndexData = Data(
     """

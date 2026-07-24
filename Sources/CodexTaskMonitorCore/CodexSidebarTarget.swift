@@ -58,7 +58,7 @@ public enum SidebarThreadGroup: Equatable {
         case let .project(name):
             return "\(name)中的已安排任务"
         case .projectless:
-            return "任务"
+            return ""
         }
     }
 
