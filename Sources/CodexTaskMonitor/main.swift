@@ -452,7 +452,12 @@ private struct CodexSidebarRevealer {
 
     static func requestAccessibilityPermission() -> Bool {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        return AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        return AccessibilityPermissionGate.request(
+            isTrusted: { AXIsProcessTrusted() },
+            prompt: {
+                AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+            }
+        )
     }
 
     func reveal(threadID: String, cwd: String) throws {

@@ -534,6 +534,30 @@ expect(
     "preferences restore the exact handled task"
 )
 
+var trustedPromptCalls = 0
+expect(
+    AccessibilityPermissionGate.request(
+        isTrusted: { true },
+        prompt: {
+            trustedPromptCalls += 1
+            return false
+        }
+    ) && trustedPromptCalls == 0,
+    "trusted accessibility status skips the system prompt"
+)
+
+var untrustedPromptCalls = 0
+expect(
+    !AccessibilityPermissionGate.request(
+        isTrusted: { false },
+        prompt: {
+            untrustedPromptCalls += 1
+            return false
+        }
+    ) && untrustedPromptCalls == 1,
+    "untrusted accessibility status requests the system prompt"
+)
+
 print("Core checks passed")
 
 private func date(_ seconds: TimeInterval) -> Date {
