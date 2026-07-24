@@ -365,6 +365,7 @@ try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediate
 defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
 
 let databaseURL = temporaryDirectory.appendingPathComponent("state.sqlite")
+let codexCreatedDatabaseURL = temporaryDirectory.appendingPathComponent("codex-created.sqlite")
 let rolloutURL = temporaryDirectory.appendingPathComponent("visible.jsonl")
 let changedFormatDatabaseURL = temporaryDirectory.appendingPathComponent("changed-format.sqlite")
 let changedFormatRolloutURL = temporaryDirectory.appendingPathComponent("changed-format.jsonl")
@@ -391,6 +392,21 @@ let largeUnrelatedLine = """
     """
 let initialRollout = startedLine + largeUnrelatedLine
 try Data(initialRollout.utf8).write(to: rolloutURL)
+try createFixtureDatabase(at: codexCreatedDatabaseURL, rolloutPath: rolloutURL.path)
+try insertVisibleThread(
+    into: codexCreatedDatabaseURL,
+    id: "codex-created",
+    rolloutPath: rolloutURL.path,
+    threadSource: "subagent"
+)
+let codexCreatedItems = try TaskMonitor(databaseURL: codexCreatedDatabaseURL)
+    .scan(baseline: baseline)
+expect(
+    Set(codexCreatedItems.map(\.threadID)) == ["visible", "codex-created"]
+        && codexCreatedItems.allSatisfy { $0.state == .running },
+    "monitor includes user-visible Codex-created threads but not internal subagents"
+)
+
 try createFixtureDatabase(at: databaseURL, rolloutPath: rolloutURL.path)
 let threads = try ThreadStore.readThreads(from: databaseURL)
 expect(
@@ -541,20 +557,26 @@ private func createFixtureDatabase(at url: URL, rolloutPath: String) throws {
     let sql = """
         CREATE TABLE threads (
             id TEXT, title TEXT, cwd TEXT, updated_at_ms INTEGER,
-            rollout_path TEXT, archived INTEGER, preview TEXT, thread_source TEXT
+            rollout_path TEXT, archived INTEGER, preview TEXT, thread_source TEXT,
+            source TEXT
         );
         INSERT INTO threads VALUES
-            ('visible', 'Visible task', '/tmp/project', 123000, '\(escapedRolloutPath)', 0, 'hello', 'user'),
-            ('archived', 'Archived task', '/tmp/project', 124000, '/tmp/archived.jsonl', 1, 'hello', 'user'),
-            ('hidden', 'Hidden task', '/tmp/project', 125000, '/tmp/hidden.jsonl', 0, '', 'user'),
-            ('subagent', 'Subagent task', '/tmp/project', 126000, '/tmp/subagent.jsonl', 0, 'hello', 'subagent');
+            ('visible', 'Visible task', '/tmp/project', 123000, '\(escapedRolloutPath)', 0, 'hello', 'user', 'vscode'),
+            ('archived', 'Archived task', '/tmp/project', 124000, '/tmp/archived.jsonl', 1, 'hello', 'user', 'vscode'),
+            ('hidden', 'Hidden task', '/tmp/project', 125000, '/tmp/hidden.jsonl', 0, '', 'user', 'vscode'),
+            ('internal-subagent', 'Internal subagent', '/tmp/project', 127000, '/tmp/subagent.jsonl', 0, 'hello', 'subagent', '{"subagent":{}}');
         """
     guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
         throw FixtureError.sqlite
     }
 }
 
-private func insertVisibleThread(into url: URL, id: String, rolloutPath: String) throws {
+private func insertVisibleThread(
+    into url: URL,
+    id: String,
+    rolloutPath: String,
+    threadSource: String = "user"
+) throws {
     var database: OpaquePointer?
     guard sqlite3_open(url.path, &database) == SQLITE_OK, let database else {
         throw FixtureError.sqlite
@@ -563,10 +585,11 @@ private func insertVisibleThread(into url: URL, id: String, rolloutPath: String)
 
     let escapedID = id.replacingOccurrences(of: "'", with: "''")
     let escapedRolloutPath = rolloutPath.replacingOccurrences(of: "'", with: "''")
+    let escapedThreadSource = threadSource.replacingOccurrences(of: "'", with: "''")
     let sql = """
         INSERT INTO threads VALUES
             ('\(escapedID)', 'Unreadable task', '/tmp/project', 123000,
-             '\(escapedRolloutPath)', 0, 'hello', 'user');
+             '\(escapedRolloutPath)', 0, 'hello', '\(escapedThreadSource)', 'vscode');
         """
     guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
         throw FixtureError.sqlite
