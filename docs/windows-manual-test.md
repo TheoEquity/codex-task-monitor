@@ -48,8 +48,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | 3F2949FB0F61D14D532D62F702371BF3414A15395683C007063DFCDCDC4D871A |
-| Test commit SHA | f844b33f1eeee937777d77ae57058b1718bc2806 |
+| Installer SHA-256 | ED07B869E72B38445A02193251819E063E0C5FFF2778D14CF797805C3FEBEE1B |
+| Test commit SHA | b03471b22f3571f2789a3717a1cdd54f2d483d0f |
 | Pass date | 2026-08-16 |
 
 ## Automated current-machine evidence
@@ -63,5 +63,6 @@ unchecked visual, click, Codex-interaction, reboot, or login acceptance item abo
 | Installed executable process start | Installed executable started after first install and final reinstall. |
 | HKCU Run value inspection | The fixed `CodexTaskMonitor` value was present after install, upgrade, and reinstall, and absent after uninstall. |
 | Installed files inspection | Installed executable existed after install, upgrade, and reinstall; the installation directory was absent after uninstall. |
-| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,244,182 bytes, unsigned, and was validated with its recorded SHA-256. |
+| Title-bar blank-area hit test | The compiled WPF title bar resolves a blank point to the title-bar `Grid`; removing its transparent background makes the regression test fail. Real pointer dragging remains a manual interaction check. |
+| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,243,971 bytes, unsigned, and was validated with its recorded SHA-256. |
 | Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist. One monitor process remained running at both 5-second and 20-second checks, with no new `.NET Runtime` or `Application Error` crash event. |
