@@ -5,3 +5,5 @@ outputs/*.app/
 .worktrees/
 windows/**/bin/
 windows/**/obj/
+windows/publish/
+windows/artifacts/

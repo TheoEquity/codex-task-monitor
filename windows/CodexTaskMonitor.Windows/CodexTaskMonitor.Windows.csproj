@@ -5,6 +5,12 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>CodexTaskMonitor</AssemblyName>
     <RootNamespace>CodexTaskMonitor.Windows</RootNamespace>
+    <Version>1.0.0</Version>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CodexTaskMonitor.Core\CodexTaskMonitor.Core.csproj" />

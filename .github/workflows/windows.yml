@@ -1,0 +1,65 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+      - 'global.json'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows.yml'
+      - 'global.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.424'
+          cache: true
+          cache-dependency-path: |
+            windows/**/*.csproj
+            windows/Directory.Packages.props
+            global.json
+      - name: Restore
+        run: dotnet restore windows/CodexTaskMonitor.sln
+      - name: Test
+        run: dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"
+      - name: Publish self-contained app
+        run: dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64
+      - name: Install Inno Setup 7
+        shell: pwsh
+        run: winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements
+      - name: Build installer
+        shell: pwsh
+        run: '& ''C:\Program Files\Inno Setup 7\ISCC.exe'' windows/Installer/CodexTaskMonitor.iss'
+      - name: Hash artifacts
+        shell: pwsh
+        run: Get-FileHash windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe -Algorithm SHA256 | Format-List
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Task-Monitor-Windows-x64
+          path: |
+            windows/publish/win-x64/**
+            windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe
+            windows/CodexTaskMonitor.Tests/TestResults/**
+      - name: Create or update tag release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title "Codex Task Monitor $tag" --generate-notes }
+          gh release upload $tag windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe --clobber
