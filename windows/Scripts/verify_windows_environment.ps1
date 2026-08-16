@@ -27,7 +27,26 @@ if ((Test-Path -LiteralPath $database) -and $null -ne $sqlite) {
 }
 
 $protocol = Get-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\codex' -ErrorAction SilentlyContinue
-$chatGpt = @(Get-Process ChatGPT -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0)
+try {
+    $codexProtocolRegistered = $null -ne $protocol
+}
+finally {
+    if ($null -ne $protocol) { $protocol.Dispose() }
+}
+
+$chatGpt = @(Get-Process ChatGPT -ErrorAction SilentlyContinue)
+$chatGptMainWindowFound = $false
+foreach ($process in $chatGpt) {
+    try {
+        if ($process.MainWindowHandle -ne 0) { $chatGptMainWindowFound = $true }
+    }
+    catch {
+        # An exiting or inaccessible process is not a visible ChatGPT window.
+    }
+    finally {
+        $process.Dispose()
+    }
+}
 $result = [ordered]@{
     windows_11 = [Environment]::OSVersion.Version.Build -ge 22000
     x64_process = [Environment]::Is64BitProcess
@@ -38,8 +57,8 @@ $result = [ordered]@{
     required_schema_present =
         @($requiredThreadColumns | Where-Object { $_ -notin $actualThreadColumns }).Count -eq 0 -and
         @($requiredSectionColumns | Where-Object { $_ -notin $actualSectionColumns }).Count -eq 0
-    codex_protocol_registered = $null -ne $protocol
-    chatgpt_main_window_found = $chatGpt.Count -ge 1
+    codex_protocol_registered = $codexProtocolRegistered
+    chatgpt_main_window_found = $chatGptMainWindowFound
 }
 
 $result | ConvertTo-Json -Compress
