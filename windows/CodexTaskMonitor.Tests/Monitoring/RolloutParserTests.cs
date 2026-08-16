@@ -113,4 +113,140 @@ public sealed class RolloutParserTests
 
         Assert.Equal("turn-1", RolloutParser.LatestAfter(null, data)!.TurnId);
     }
+
+    [Fact]
+    public async Task FileStream_UsesStartingLengthSnapshotWhenWriterAppendsDuringScan()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n";
+            var unrelated = "{\"type\":\"response_item\",\"payload\":\"" + new string('x', 32 * 1024 * 1024) + "\"}\n";
+            await File.WriteAllTextAsync(path, started + unrelated);
+
+            var reading = RolloutParser.LatestAsync(path, default);
+            Assert.False(reading.IsCompleted);
+            await File.AppendAllTextAsync(path,
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-a\",\"started_at\":101,\"completed_at\":102}}\n");
+
+            Assert.Equal(LifecycleKind.Started, (await reading)!.Kind);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LatestAfter_InvalidUtf8InCompleteLine_ReportsFormatChange()
+    {
+        var data = new byte[]
+        {
+            (byte)'{', (byte)'"', (byte)'t', (byte)'y', (byte)'p', (byte)'e', (byte)'"', (byte)':',
+            (byte)'"', (byte)'e', (byte)'v', (byte)'e', (byte)'n', (byte)'t', (byte)'_', (byte)'m', (byte)'s', (byte)'g', (byte)'"',
+            (byte)',', 0xFF, (byte)'}', (byte)'\n'
+        };
+
+        var error = Assert.Throws<CodexDataException>(() => RolloutParser.LatestAfter(null, data));
+
+        Assert.Equal(CodexDataError.FormatChanged, error.Error);
+        Assert.DoesNotContain("event_msg", error.Message);
+    }
+
+    [Fact]
+    public async Task FileStream_InvalidUtf8InCompleteLine_ReportsFormatChange()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(path, [
+                (byte)'{', (byte)'"', (byte)'t', (byte)'y', (byte)'p', (byte)'e', (byte)'"', (byte)':',
+                (byte)'"', (byte)'e', (byte)'v', (byte)'e', (byte)'n', (byte)'t', (byte)'_', (byte)'m', (byte)'s', (byte)'g', (byte)'"',
+                (byte)',', 0xFF, (byte)'}', (byte)'\n'
+            ]);
+
+            var error = await Assert.ThrowsAsync<CodexDataException>(() => RolloutParser.LatestAsync(path, default));
+
+            Assert.Equal(CodexDataError.FormatChanged, error.Error);
+            Assert.DoesNotContain("event_msg", error.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Utf8Bom_IsConsistentlySupported(bool fromFile)
+    {
+        var data = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).GetPreamble()
+            .Concat(Encoding.UTF8.GetBytes("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n"))
+            .ToArray();
+
+        if (!fromFile)
+        {
+            Assert.Equal(LifecycleKind.Started, RolloutParser.LatestAfter(null, data)!.Kind);
+            return;
+        }
+
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(path, data);
+            Assert.Equal(LifecycleKind.Started, (await RolloutParser.LatestAsync(path, default))!.Kind);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Utf8BomAndCrLf_PreserveMultibyteTurnId(bool fromFile)
+    {
+        const string turnId = "turn-\u00e9-\u4e00";
+        var json = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"" + turnId + "\",\"started_at\":101}}\r\n";
+        var data = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).GetPreamble()
+            .Concat(Encoding.UTF8.GetBytes(json))
+            .ToArray();
+
+        if (!fromFile)
+        {
+            Assert.Equal(turnId, RolloutParser.LatestAfter(null, data)!.TurnId);
+            return;
+        }
+
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(path, data);
+            Assert.Equal(turnId, (await RolloutParser.LatestAsync(path, default))!.TurnId);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void EscapedLifecycleType_IsRecognizedWithoutBroadeningSupportedTypes()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_\\u0073tarted\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n");
+
+        Assert.Equal(LifecycleKind.Started, RolloutParser.LatestAfter(null, data)!.Kind);
+    }
+
+    [Fact]
+    public void UnrelatedEventContainingLifecycleMarker_IsIgnored()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"message\",\"text\":\"task_started\"}}\n");
+
+        Assert.Null(RolloutParser.LatestAfter(null, data));
+    }
 }

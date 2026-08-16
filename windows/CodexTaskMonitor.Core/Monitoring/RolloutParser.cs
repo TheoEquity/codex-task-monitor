@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using CodexTaskMonitor.Core.Data;
@@ -6,7 +7,9 @@ namespace CodexTaskMonitor.Core.Monitoring;
 
 public static class RolloutParser
 {
+    private const int BufferSize = 81920;
     private static readonly string[] Markers = ["task_started", "task_complete", "turn_aborted"];
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     public static async Task<LifecycleEvent?> LatestAsync(string path, CancellationToken cancellationToken)
     {
@@ -14,31 +17,48 @@ public static class RolloutParser
             path,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
+            FileShare.ReadWrite | FileShare.Delete,
+            BufferSize,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-        var endsWithNewline = stream.Length == 0;
-        if (stream.Length > 0)
-        {
-            stream.Seek(-1, SeekOrigin.End);
-            endsWithNewline = stream.ReadByte() == (byte)'\n';
-            stream.Seek(0, SeekOrigin.Begin);
-        }
-
-        using var reader = new StreamReader(
-            stream,
-            Encoding.UTF8,
-            detectEncodingFromByteOrderMarks: true,
-            leaveOpen: true);
-
+        var remaining = stream.Length;
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        var line = new ArrayBufferWriter<byte>();
+        var isFirstLine = true;
         LifecycleEvent? current = null;
-        var pending = await reader.ReadLineAsync(cancellationToken);
-        while (pending is not null)
-        {
-            var next = await reader.ReadLineAsync(cancellationToken);
-            if (next is not null || endsWithNewline)
-                current = ApplyLine(current, pending);
 
-            pending = next;
+        try
+        {
+            while (remaining > 0)
+            {
+                var requested = (int)Math.Min(buffer.Length, remaining);
+                var read = await stream.ReadAsync(buffer.AsMemory(0, requested), cancellationToken);
+                if (read == 0)
+                    break;
+
+                remaining -= read;
+                var unread = buffer.AsMemory(0, read);
+                while (!unread.IsEmpty)
+                {
+                    var newline = unread.Span.IndexOf((byte)'\n');
+                    if (newline < 0)
+                    {
+                        line.Write(unread.Span);
+                        break;
+                    }
+
+                    var completeLine = unread[..(newline + 1)];
+                    line.Write(completeLine.Span);
+                    current = ApplyCompleteLine(current, line.WrittenSpan, isFirstLine);
+                    isFirstLine = false;
+                    line.Clear();
+                    unread = unread[(newline + 1)..];
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
 
         return current;
@@ -46,31 +66,56 @@ public static class RolloutParser
 
     public static LifecycleEvent? LatestAfter(LifecycleEvent? current, ReadOnlySpan<byte> data)
     {
-        var text = Encoding.UTF8.GetString(data);
-        var endsWithNewline = text.Length == 0 || text[^1] == '\n';
+        var lastNewline = data.LastIndexOf((byte)'\n');
+        if (lastNewline < 0)
+            return current;
+
+        var text = DecodeCompleteUtf8(data[..(lastNewline + 1)], isFirstLine: true);
         var lines = text.Split('\n');
-        var limit = endsWithNewline ? lines.Length : lines.Length - 1;
-        for (var index = 0; index < limit; index++)
-            current = ApplyLine(current, lines[index].TrimEnd('\r'));
+        foreach (var line in lines)
+            current = ApplyLine(current, line.TrimEnd('\r'));
 
         return current;
     }
 
+    private static LifecycleEvent? ApplyCompleteLine(
+        LifecycleEvent? current,
+        ReadOnlySpan<byte> data,
+        bool isFirstLine) =>
+        ApplyLine(current, DecodeCompleteUtf8(data, isFirstLine).TrimEnd('\n').TrimEnd('\r'));
+
+    private static string DecodeCompleteUtf8(ReadOnlySpan<byte> data, bool isFirstLine)
+    {
+        try
+        {
+            var text = StrictUtf8.GetString(data);
+            return isFirstLine && text.StartsWith('\uFEFF') ? text[1..] : text;
+        }
+        catch (DecoderFallbackException error)
+        {
+            throw FormatChanged(error);
+        }
+    }
+
     private static LifecycleEvent? ApplyLine(LifecycleEvent? current, string line)
     {
-        if (string.IsNullOrEmpty(line) || !Markers.Any(line.Contains))
+        if (string.IsNullOrEmpty(line))
             return current;
 
         try
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
-            if (!root.TryGetProperty("type", out var eventType) || eventType.GetString() != "event_msg")
+            if (!root.TryGetProperty("type", out var eventType) ||
+                eventType.ValueKind != JsonValueKind.String ||
+                eventType.GetString() != "event_msg" ||
+                !root.TryGetProperty("payload", out var payload) ||
+                payload.ValueKind != JsonValueKind.Object ||
+                !payload.TryGetProperty("type", out var kindElement) ||
+                kindElement.ValueKind != JsonValueKind.String)
                 return current;
 
-            var payload = root.GetProperty("payload");
-            var kindText = payload.GetProperty("type").GetString();
-            var kind = kindText switch
+            var kind = kindElement.GetString() switch
             {
                 "task_started" => LifecycleKind.Started,
                 "task_complete" => LifecycleKind.Completed,
@@ -97,9 +142,16 @@ public static class RolloutParser
                 DateTimeOffset.FromUnixTimeMilliseconds((long)(completed * 1000)));
             return current is null || current.TurnId == turnId ? terminal : current;
         }
+        catch (JsonException) when (!Markers.Any(line.Contains))
+        {
+            return current;
+        }
         catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or ArgumentOutOfRangeException or OverflowException)
         {
-            throw new CodexDataException(CodexDataError.FormatChanged, "Codex rollout format changed", error);
+            throw FormatChanged(error);
         }
     }
+
+    private static CodexDataException FormatChanged(Exception error) =>
+        new(CodexDataError.FormatChanged, "Codex rollout format changed", error);
 }
