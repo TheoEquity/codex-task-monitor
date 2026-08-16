@@ -8,7 +8,6 @@ namespace CodexTaskMonitor.Core.Monitoring;
 public static class RolloutParser
 {
     private const int BufferSize = 81920;
-    private static readonly string[] Markers = ["task_started", "task_complete", "turn_aborted"];
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     public static async Task<LifecycleEvent?> LatestAsync(string path, CancellationToken cancellationToken)
@@ -115,13 +114,7 @@ public static class RolloutParser
                 kindElement.ValueKind != JsonValueKind.String)
                 return current;
 
-            var kind = kindElement.GetString() switch
-            {
-                "task_started" => LifecycleKind.Started,
-                "task_complete" => LifecycleKind.Completed,
-                "turn_aborted" => LifecycleKind.Aborted,
-                _ => (LifecycleKind?)null
-            };
+            var kind = LifecycleKindFor(kindElement.GetString());
             if (kind is null)
                 return current;
 
@@ -142,7 +135,7 @@ public static class RolloutParser
                 DateTimeOffset.FromUnixTimeMilliseconds((long)(completed * 1000)));
             return current is null || current.TurnId == turnId ? terminal : current;
         }
-        catch (JsonException) when (!ContainsLifecycleMarker(line))
+        catch (JsonException) when (!HasMalformedLifecycleEnvelope(line))
         {
             return current;
         }
@@ -155,63 +148,55 @@ public static class RolloutParser
     private static CodexDataException FormatChanged(Exception error) =>
         new(CodexDataError.FormatChanged, "Codex rollout format changed", error);
 
-    private static bool ContainsLifecycleMarker(string line) =>
-        line.Contains("\"event_msg\"", StringComparison.Ordinal) &&
-        Markers.Any(marker => ContainsJsonEscapedAscii(line, marker));
-
-    private static bool ContainsJsonEscapedAscii(string text, string marker)
+    private static LifecycleKind? LifecycleKindFor(string? type) => type switch
     {
-        for (var start = 0; start < text.Length; start++)
+        "task_started" => LifecycleKind.Started,
+        "task_complete" => LifecycleKind.Completed,
+        "turn_aborted" => LifecycleKind.Aborted,
+        _ => null
+    };
+
+    private static bool HasMalformedLifecycleEnvelope(string line)
+    {
+        var rootIsEventMessage = false;
+        LifecycleKind? payloadKind = null;
+        var rootProperty = string.Empty;
+        var payloadProperty = string.Empty;
+        var payloadDepth = -1;
+
+        try
         {
-            var index = start;
-            var markerIndex = 0;
-            while (markerIndex < marker.Length && index < text.Length)
+            var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(line));
+            while (reader.Read())
             {
-                if (text[index] == marker[markerIndex])
+                switch (reader.TokenType)
                 {
-                    index++;
-                    markerIndex++;
-                    continue;
+                    case JsonTokenType.PropertyName when reader.CurrentDepth == 1:
+                        rootProperty = reader.GetString() ?? string.Empty;
+                        break;
+                    case JsonTokenType.StartObject when reader.CurrentDepth == 1 && rootProperty == "payload":
+                        payloadDepth = reader.CurrentDepth;
+                        break;
+                    case JsonTokenType.PropertyName when reader.CurrentDepth == payloadDepth + 1:
+                        payloadProperty = reader.GetString() ?? string.Empty;
+                        break;
+                    case JsonTokenType.String when reader.CurrentDepth == 1 && rootProperty == "type":
+                        rootIsEventMessage = reader.GetString() == "event_msg";
+                        break;
+                    case JsonTokenType.String when reader.CurrentDepth == payloadDepth + 1 && payloadProperty == "type":
+                        payloadKind = LifecycleKindFor(reader.GetString());
+                        break;
+                    case JsonTokenType.EndObject when reader.CurrentDepth == payloadDepth:
+                        payloadDepth = -1;
+                        break;
                 }
-
-                if (text[index] != '\\' ||
-                    index + 5 >= text.Length ||
-                    text[index + 1] != 'u' ||
-                    !TryReadHex(text.AsSpan(index + 2, 4), out var value) ||
-                    value != marker[markerIndex])
-                    break;
-
-                index += 6;
-                markerIndex++;
             }
-
-            if (markerIndex == marker.Length)
-                return true;
+        }
+        catch (JsonException)
+        {
+            return rootIsEventMessage && payloadKind is not null;
         }
 
         return false;
-    }
-
-    private static bool TryReadHex(ReadOnlySpan<char> text, out char value)
-    {
-        value = default;
-        var number = 0;
-        foreach (var character in text)
-        {
-            var digit = character switch
-            {
-                >= '0' and <= '9' => character - '0',
-                >= 'a' and <= 'f' => character - 'a' + 10,
-                >= 'A' and <= 'F' => character - 'A' + 10,
-                _ => -1
-            };
-            if (digit < 0)
-                return false;
-
-            number = (number * 16) + digit;
-        }
-
-        value = (char)number;
-        return true;
     }
 }

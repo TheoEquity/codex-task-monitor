@@ -255,6 +255,19 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void NewlineTerminatedMalformedEscapedRootLifecycleEnvelope_ReportsFormatChangeWithoutBody()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_\\u006dsg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\n");
+
+        var error = Assert.Throws<CodexDataException>(() => RolloutParser.LatestAfter(null, data));
+
+        Assert.Equal(CodexDataError.FormatChanged, error.Error);
+        Assert.DoesNotContain("event_", error.Message);
+        Assert.DoesNotContain("task_started", error.Message);
+    }
+
+    [Fact]
     public void NewlineTerminatedMalformedUnrelatedLine_IsIgnored()
     {
         var data = Encoding.UTF8.GetBytes("{\"type\":\"response_item\"\n");
