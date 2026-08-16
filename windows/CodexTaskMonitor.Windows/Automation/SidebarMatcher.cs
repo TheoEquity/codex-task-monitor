@@ -18,13 +18,13 @@ public static class SidebarMatcher
         if (candidates.Length == 0)
             return new SidebarMatchResult(SidebarMatchStatus.NotFound, null);
 
-        if (candidates.Length == 1)
-            return candidates[0].IsOffscreen
-                ? new SidebarMatchResult(SidebarMatchStatus.NotFound, null)
-                : new SidebarMatchResult(SidebarMatchStatus.Found, candidates[0]);
+        if (target.Group.Kind == SidebarThreadGroupKind.Projectless)
+            return candidates.Length == 1
+                ? VisibleResult(candidates[0])
+                : new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null);
 
         var label = GroupLabel(target.Group);
-        if (string.IsNullOrEmpty(label))
+        if (string.IsNullOrWhiteSpace(label))
             return new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null);
 
         var headings = snapshot.Nodes.Where(node =>
@@ -35,16 +35,26 @@ public static class SidebarMatcher
 
         var scored = candidates.Select(candidate => new CandidateScore(
             candidate,
-            GroupEvidenceScore(candidate, headings)))
+            CalculateGroupEvidence(candidate, headings)))
             .OrderByDescending(item => item.Score)
             .ToArray();
+
+        if (candidates.Length == 1)
+        {
+            var only = scored[0];
+            if (only.Evidence.ValidHeadingCount == 1)
+                return VisibleResult(only.Candidate);
+            return only.Evidence.HasLaterHeading
+                ? new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null)
+                : only.Evidence.ValidHeadingCount == 0
+                    ? new SidebarMatchResult(SidebarMatchStatus.NotFound, null)
+                    : new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null);
+        }
 
         if (scored[0].Score < 2 || scored[0].Score == scored[1].Score)
             return new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null);
 
-        return scored[0].Candidate.IsOffscreen
-            ? new SidebarMatchResult(SidebarMatchStatus.NotFound, null)
-            : new SidebarMatchResult(SidebarMatchStatus.Found, scored[0].Candidate);
+        return VisibleResult(scored[0].Candidate);
     }
 
     private static string? GroupLabel(SidebarThreadGroup group) => group.Kind switch
@@ -62,16 +72,32 @@ public static class SidebarMatcher
         return count;
     }
 
-    private static int GroupEvidenceScore(AutomationNode candidate, IReadOnlyList<AutomationNode> headings) =>
-        headings.Where(heading => heading.TraversalIndex < candidate.TraversalIndex)
+    private static GroupEvidence CalculateGroupEvidence(AutomationNode candidate, IReadOnlyList<AutomationNode> headings)
+    {
+        var headingScores = headings
             .Select(heading => new HeadingScore(
                 heading,
                 CommonPrefix(candidate.AncestorRuntimeIds, heading.AncestorRuntimeIds)))
             .Where(item => item.Score >= 2 && item.Score == item.Heading.AncestorRuntimeIds.Count)
-            .Select(item => item.Score)
-            .DefaultIfEmpty(0)
-            .Max();
+            .ToArray();
+        var preceding = headingScores
+            .Where(item => item.Heading.TraversalIndex < candidate.TraversalIndex)
+            .ToArray();
+        var hasLaterHeading = headingScores.Any(item => item.Heading.TraversalIndex >= candidate.TraversalIndex);
+        return preceding.Length == 1
+            ? new GroupEvidence(preceding[0].Score, preceding.Length, hasLaterHeading)
+            : new GroupEvidence(0, preceding.Length, hasLaterHeading);
+    }
 
-    private sealed record CandidateScore(AutomationNode Candidate, int Score);
+    private static SidebarMatchResult VisibleResult(AutomationNode candidate) => candidate.IsOffscreen
+        ? new SidebarMatchResult(SidebarMatchStatus.NotFound, null)
+        : new SidebarMatchResult(SidebarMatchStatus.Found, candidate);
+
+    private sealed record CandidateScore(AutomationNode Candidate, GroupEvidence Evidence)
+    {
+        public int Score => Evidence.Score;
+    }
+
+    private sealed record GroupEvidence(int Score, int ValidHeadingCount, bool HasLaterHeading);
     private sealed record HeadingScore(AutomationNode Heading, int Score);
 }

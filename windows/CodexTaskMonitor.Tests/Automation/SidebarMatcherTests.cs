@@ -117,6 +117,46 @@ public sealed class SidebarMatcherTests
             SidebarMatcher.Match(snapshot, new SidebarTarget("Same", SidebarThreadGroup.Project("Project A"))).Status);
     }
 
+    [Fact]
+    public void UniqueProjectItem_InWrongGroup_IsNotFound()
+    {
+        var snapshot = Snapshot(
+            Node("heading", "ControlType.Text", "Project A", ["root", "sidebar", "other"]),
+            Node("task", "ControlType.ListItem", "Exact title", ["root", "sidebar", "project"]));
+
+        Assert.Equal(SidebarMatchStatus.NotFound,
+            SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Project("Project A"))).Status);
+    }
+
+    [Fact]
+    public void UniqueSectionItem_WithoutHeading_IsAmbiguous()
+    {
+        var snapshot = Snapshot(Node("task", "ControlType.ListItem", "Exact title", ["root", "sidebar", "section"]));
+
+        Assert.Equal(SidebarMatchStatus.Ambiguous,
+            SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Section("Section A"))).Status);
+    }
+
+    [Fact]
+    public void UniquePinnedItem_WithHeadingAfterItem_IsAmbiguous()
+    {
+        var snapshot = Snapshot(
+            Node("task", "ControlType.ListItem", "Exact title", ["root", "sidebar", "pinned"]),
+            Node("heading", "ControlType.Text", "\u7F6E\u9876", ["root", "sidebar", "pinned"]));
+
+        Assert.Equal(SidebarMatchStatus.Ambiguous,
+            SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Pinned())).Status);
+    }
+
+    [Fact]
+    public void UniqueProjectlessItem_WithoutGroupEvidence_IsAccepted()
+    {
+        var snapshot = Snapshot(Node("task", "ControlType.ListItem", "Exact title", ["root", "sidebar"]));
+
+        Assert.Equal(SidebarMatchStatus.Found,
+            SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Projectless())).Status);
+    }
+
     private static AutomationNode Node(
         string id,
         string controlType,
