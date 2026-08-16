@@ -1,7 +1,9 @@
 using System.Windows;
+using System.Diagnostics;
 using CodexTaskMonitor.Core.Sidebar;
 using CodexTaskMonitor.Tests.Fakes;
 using CodexTaskMonitor.Windows.Automation;
+using CodexTaskMonitor.Windows.Interop;
 
 namespace CodexTaskMonitor.Tests.Automation;
 
@@ -114,6 +116,138 @@ public sealed class SidebarScrollControllerTests
         Assert.False(result.Node!.IsOffscreen);
     }
 
+    [Fact]
+    public async Task Reveal_TimesOutAndCancelsHungSnapshot()
+    {
+        var snapshots = new HangingSnapshotProvider();
+        var controller = new SidebarScrollController(snapshots, new NeverCalledScrollInput(), TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromMilliseconds(50));
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.TimedOut, result.Status);
+        Assert.True(snapshots.CancellationObserved);
+    }
+
+    [Fact]
+    public async Task Reveal_TimesOutAndCancelsHungInput()
+    {
+        var environment = FakeAutomationEnvironment.WithPages(0, Page("top"));
+        var input = new HangingScrollInput();
+        var controller = new SidebarScrollController(environment, input, TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromMilliseconds(50));
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.TimedOut, result.Status);
+        Assert.True(input.CancellationObserved);
+    }
+
+    [Fact]
+    public async Task Reveal_TimesOutWhenInputBlocksBeforeReturningATask()
+    {
+        var environment = FakeAutomationEnvironment.WithPages(0, Page("top"));
+        var controller = new SidebarScrollController(environment, new BlockingScrollInput(), TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromMilliseconds(50));
+        var started = Stopwatch.GetTimestamp();
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.TimedOut, result.Status);
+        Assert.True(Stopwatch.GetElapsedTime(started) < TimeSpan.FromMilliseconds(250));
+    }
+
+    [Fact]
+    public async Task Reveal_TimesOutDuringLongSettleDelay()
+    {
+        var environment = FakeAutomationEnvironment.WithPages(0, Page("top"));
+        var controller = new SidebarScrollController(environment, environment, TimeProvider.System, TimeSpan.FromSeconds(1), 80, TimeSpan.FromMilliseconds(50));
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.TimedOut, result.Status);
+    }
+
+    [Fact]
+    public async Task Reveal_ProbeWaitsForTwoUnchangedSnapshotsBeforeFallback()
+    {
+        var environment = FakeAutomationEnvironment.WithDelayedDownUpdate(0, 1,
+            Page("top"), Page("target", targetTitle: "Wanted"));
+        var controller = new SidebarScrollController(environment, environment, TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromSeconds(8));
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.Found, result.Status);
+        Assert.Equal([SidebarInputMode.AutomationPattern], environment.Modes.Distinct());
+    }
+
+    [Fact]
+    public void Detect_RejectsListItemsFromDifferentSidebarContainers()
+    {
+        var snapshot = new AutomationSnapshot(new Rect(0, 0, 1000, 800),
+        [
+            Node("a", 20, ["root", "sidebar-a"]),
+            Node("b", 60, ["root", "sidebar-b"]),
+            Node("c", 100, ["root", "sidebar-a"]),
+            Node("d", 140, ["root", "sidebar-b"])
+        ]);
+
+        Assert.Null(SidebarRegionDetector.Detect(snapshot));
+    }
+
+    [Fact]
+    public void Detect_UsesAValidatedSidebarItemAsTheInputAnchor()
+    {
+        var snapshot = Page("top");
+
+        var region = SidebarRegionDetector.Detect(snapshot);
+
+        Assert.NotNull(region);
+        var anchor = Assert.Single(snapshot.Nodes, node => node.RuntimeId == region.InputNodeRuntimeId);
+        Assert.True(anchor.Bounds.Contains(region.InputPoint));
+        Assert.Equal("sidebar", region.ContainerRuntimeId);
+    }
+
+    [Fact]
+    public async Task NativeInput_UsesOneWheelWithExpectedDirectionAndRestoresAfterSendFailure()
+    {
+        var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 55, SendWheelResult = false, ForegroundAfterSend = 456 };
+        var input = new NativeSidebarWheelInput(api);
+        var region = Region(expectedHitTestWindow: 55);
+
+        var result = await input.ScrollAsync(123, region, ScrollDirection.Down, SidebarInputMode.PhysicalFallback, default);
+
+        Assert.False(result);
+        Assert.Equal([-240], api.WheelDeltas);
+        Assert.Equal(new Point(4, 5), api.Cursor);
+        Assert.Equal((nint)123, api.Foreground);
+    }
+
+    [Fact]
+    public async Task NativeInput_RejectsUnvalidatedPointWithoutWheel()
+    {
+        var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 99 };
+        var input = new NativeSidebarWheelInput(api);
+
+        var result = await input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PostedMessage, default);
+
+        Assert.False(result);
+        Assert.Empty(api.WheelDeltas);
+        Assert.Empty(api.PostedDeltas);
+    }
+
+    [Fact]
+    public async Task NativeInput_RejectsCancellationBeforeChangingCursor()
+    {
+        var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 55 };
+        var input = new NativeSidebarWheelInput(api);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PhysicalFallback, cancellation.Token));
+
+        Assert.Empty(api.WheelDeltas);
+        Assert.Equal(new Point(4, 5), api.Cursor);
+    }
+
     private static AutomationSnapshot Page(string key, string? targetTitle = null, bool targetOffscreen = false)
     {
         var nodes = new List<AutomationNode>();
@@ -125,5 +259,96 @@ public sealed class SidebarScrollControllerTests
                 targetOffscreen ? Rect.Empty : new Rect(10, 160, 200, 30), targetOffscreen,
                 ["root", "sidebar"], 4));
         return new AutomationSnapshot(new Rect(0, 0, 1000, 800), nodes);
+    }
+
+    private static AutomationNode Node(string id, double top, string[] ancestors) =>
+        new(id, "ControlType.ListItem", id, "", new Rect(10, top, 200, 30), false, ancestors, (int)top);
+
+    private static SidebarScrollRegion Region(nint expectedHitTestWindow) =>
+        new(new Rect(10, 20, 200, 150), new Point(22, 75), "sidebar", "item", expectedHitTestWindow);
+
+    private sealed class HangingSnapshotProvider : IUiAutomationSnapshotProvider
+    {
+        public bool CancellationObserved { get; private set; }
+
+        public Task<AutomationSnapshot> CaptureAsync(nint windowHandle, CancellationToken token)
+        {
+            token.Register(() => CancellationObserved = true);
+            return new TaskCompletionSource<AutomationSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        }
+    }
+
+    private sealed class HangingScrollInput : ISidebarScrollInput
+    {
+        public bool CancellationObserved { get; private set; }
+
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+        {
+            token.Register(() => CancellationObserved = true);
+            return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        }
+    }
+
+    private sealed class NeverCalledScrollInput : ISidebarScrollInput
+    {
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token) =>
+            throw new InvalidOperationException("Input should not be called while snapshot is hung.");
+    }
+
+    private sealed class BlockingScrollInput : ISidebarScrollInput
+    {
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+        {
+            Thread.Sleep(TimeSpan.FromMilliseconds(500));
+            return Task.FromResult(true);
+        }
+    }
+
+    private sealed class FakeNativeWheelApi : INativeSidebarWheelApi
+    {
+        public Point Cursor { get; private set; } = new(4, 5);
+        public nint Foreground { get; set; }
+        public nint PointWindow { get; set; }
+        public nint ForegroundAfterSend { get; set; }
+        public bool SendWheelResult { get; set; } = true;
+        public List<int> WheelDeltas { get; } = [];
+        public List<int> PostedDeltas { get; } = [];
+
+        public bool GetCursorPosition(out Point point)
+        {
+            point = Cursor;
+            return true;
+        }
+
+        public bool SetCursorPosition(Point point)
+        {
+            Cursor = point;
+            return true;
+        }
+
+        public nint GetForegroundWindow() => Foreground;
+
+        public bool SetForegroundWindow(nint handle)
+        {
+            Foreground = handle;
+            return true;
+        }
+
+        public nint WindowFromPoint(Point point) => PointWindow;
+
+        public bool IsWindowOwnedBy(nint root, nint window) => root == 123 && window is 55 or 99;
+
+        public bool PostWheel(nint handle, Point point, int delta)
+        {
+            PostedDeltas.Add(delta);
+            return true;
+        }
+
+        public bool SendWheel(int delta)
+        {
+            WheelDeltas.Add(delta);
+            Foreground = ForegroundAfterSend == 0 ? Foreground : ForegroundAfterSend;
+            return SendWheelResult;
+        }
     }
 }

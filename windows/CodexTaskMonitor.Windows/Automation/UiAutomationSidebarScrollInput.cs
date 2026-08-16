@@ -5,7 +5,7 @@ namespace CodexTaskMonitor.Windows.Automation;
 
 public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
 {
-    public Task<bool> ScrollAsync(nint handle, Rect region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
     {
         if (mode != SidebarInputMode.AutomationPattern)
             return Task.FromResult(false);
@@ -35,14 +35,14 @@ public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
         return completion.Task;
     }
 
-    private static bool Scroll(nint handle, Rect region, ScrollDirection direction, CancellationToken token)
+    private static bool Scroll(nint handle, SidebarScrollRegion region, ScrollDirection direction, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         try
         {
             var root = AutomationElement.FromHandle(handle);
             var condition = new PropertyCondition(AutomationElement.IsScrollPatternAvailableProperty, true);
-            var center = new Point(region.Left + region.Width / 2, region.Top + region.Height / 2);
+            var center = region.InputPoint;
             var candidates = root.FindAll(TreeScope.Descendants, condition).Cast<AutomationElement>()
                 .Select(element => (Element: element, Bounds: element.Current.BoundingRectangle))
                 .Where(item => !item.Bounds.IsEmpty && item.Bounds.Contains(center))

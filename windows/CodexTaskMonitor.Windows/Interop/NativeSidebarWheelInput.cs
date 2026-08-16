@@ -5,46 +5,63 @@ namespace CodexTaskMonitor.Windows.Interop;
 
 public sealed class NativeSidebarWheelInput
 {
-    public Task<bool> ScrollAsync(nint handle, Rect region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    private readonly INativeSidebarWheelApi api;
+
+    public NativeSidebarWheelInput() : this(new WindowsNativeSidebarWheelApi())
+    {
+    }
+
+    internal NativeSidebarWheelInput(INativeSidebarWheelApi api)
+    {
+        this.api = api ?? throw new ArgumentNullException(nameof(api));
+    }
+
+    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        var point = new NativeMethods.Point((int)region.Left + 12, (int)region.Top + (int)region.Height / 2);
         var delta = direction == ScrollDirection.Up ? 240 : -240;
 
         return mode switch
         {
-            SidebarInputMode.PostedMessage => Task.FromResult(ScrollPosted(handle, point, delta)),
-            SidebarInputMode.PhysicalFallback => Task.FromResult(ScrollPhysical(handle, point, delta, token)),
+            SidebarInputMode.PostedMessage => Task.FromResult(ScrollPosted(handle, region, delta)),
+            SidebarInputMode.PhysicalFallback => Task.FromResult(ScrollPhysical(handle, region, delta, token)),
             _ => Task.FromResult(false)
         };
     }
 
-    private static bool ScrollPosted(nint handle, NativeMethods.Point point, int delta) =>
-        NativeMethods.IsPointInWindow(handle, point) && NativeMethods.PostWheel(handle, point, delta);
+    private bool ScrollPosted(nint handle, SidebarScrollRegion region, int delta) =>
+        TryValidatePoint(handle, region, out var hitTestWindow) && api.PostWheel(hitTestWindow, region.InputPoint, delta);
 
-    private static bool ScrollPhysical(nint handle, NativeMethods.Point point, int delta, CancellationToken token)
+    private bool ScrollPhysical(nint handle, SidebarScrollRegion region, int delta, CancellationToken token)
     {
-        if (!NativeMethods.GetCursorPos(out var originalCursor))
+        var originalForeground = api.GetForegroundWindow();
+        if (!api.GetCursorPosition(out var originalCursor))
             return false;
 
-        var originalForeground = NativeMethods.GetForegroundWindow();
         try
         {
-            if (originalForeground != handle || !NativeMethods.IsPointInWindow(handle, point))
+            if (originalForeground != handle || !TryValidatePoint(handle, region, out _))
                 return false;
             token.ThrowIfCancellationRequested();
-            if (!NativeMethods.SetCursorPos(point.X, point.Y))
+            if (!api.SetCursorPosition(region.InputPoint))
                 return false;
-            if (NativeMethods.GetForegroundWindow() != handle || !NativeMethods.IsPointInWindow(handle, point))
+            if (api.GetForegroundWindow() != handle || !TryValidatePoint(handle, region, out _))
                 return false;
             token.ThrowIfCancellationRequested();
-            return NativeMethods.SendWheel(delta);
+            return api.SendWheel(delta);
         }
         finally
         {
-            _ = NativeMethods.SetCursorPos(originalCursor.X, originalCursor.Y);
-            if (originalForeground != 0 && NativeMethods.GetForegroundWindow() != originalForeground)
-                _ = NativeMethods.SetForegroundWindow(originalForeground);
+            _ = api.SetCursorPosition(originalCursor);
+            if (originalForeground != 0 && api.GetForegroundWindow() != originalForeground)
+                _ = api.SetForegroundWindow(originalForeground);
         }
+    }
+
+    private bool TryValidatePoint(nint rootHandle, SidebarScrollRegion region, out nint hitTestWindow)
+    {
+        hitTestWindow = api.WindowFromPoint(region.InputPoint);
+        return region.ExpectedHitTestWindow != 0 && hitTestWindow == region.ExpectedHitTestWindow &&
+            api.IsWindowOwnedBy(rootHandle, hitTestWindow);
     }
 }

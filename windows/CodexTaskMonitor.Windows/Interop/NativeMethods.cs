@@ -1,6 +1,31 @@
 using System.Runtime.InteropServices;
+using System.Windows;
 
 namespace CodexTaskMonitor.Windows.Interop;
+
+internal interface INativeSidebarWheelApi
+{
+    bool GetCursorPosition(out Point point);
+    bool SetCursorPosition(Point point);
+    nint GetForegroundWindow();
+    bool SetForegroundWindow(nint handle);
+    nint WindowFromPoint(Point point);
+    bool IsWindowOwnedBy(nint root, nint window);
+    bool PostWheel(nint handle, Point point, int delta);
+    bool SendWheel(int delta);
+}
+
+internal sealed class WindowsNativeSidebarWheelApi : INativeSidebarWheelApi
+{
+    public bool GetCursorPosition(out Point point) => NativeMethods.GetCursorPosition(out point);
+    public bool SetCursorPosition(Point point) => NativeMethods.SetCursorPosition(point);
+    public nint GetForegroundWindow() => NativeMethods.GetForegroundWindow();
+    public bool SetForegroundWindow(nint handle) => NativeMethods.SetForegroundWindow(handle);
+    public nint WindowFromPoint(Point point) => NativeMethods.WindowFromPoint(point);
+    public bool IsWindowOwnedBy(nint root, nint window) => NativeMethods.IsWindowOwnedBy(root, window);
+    public bool PostWheel(nint handle, Point point, int delta) => NativeMethods.PostWheel(handle, point, delta);
+    public bool SendWheel(int delta) => NativeMethods.SendWheel(delta);
+}
 
 internal static class NativeMethods
 {
@@ -10,9 +35,9 @@ internal static class NativeMethods
     private const uint GaRoot = 2;
 
     [StructLayout(LayoutKind.Sequential)]
-    public struct Point
+    private struct NativePoint
     {
-        public Point(int x, int y)
+        public NativePoint(int x, int y)
         {
             X = x;
             Y = y;
@@ -51,10 +76,10 @@ internal static class NativeMethods
     private static extern bool PostMessage(nint hWnd, uint message, nint wParam, nint lParam);
 
     [DllImport("user32.dll")]
-    public static extern bool GetCursorPos(out Point point);
+    private static extern bool GetCursorPos(out NativePoint point);
 
     [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(int x, int y);
+    private static extern bool SetCursorPos(int x, int y);
 
     [DllImport("user32.dll")]
     public static extern nint GetForegroundWindow();
@@ -63,7 +88,7 @@ internal static class NativeMethods
     public static extern bool SetForegroundWindow(nint handle);
 
     [DllImport("user32.dll")]
-    public static extern nint WindowFromPoint(Point point);
+    private static extern nint WindowFromPoint(NativePoint point);
 
     [DllImport("user32.dll")]
     private static extern nint GetAncestor(nint handle, uint flags);
@@ -71,16 +96,31 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] inputs, int size);
 
-    public static bool IsPointInWindow(nint handle, Point point)
+    public static bool GetCursorPosition(out Point point)
     {
-        var pointWindow = WindowFromPoint(point);
-        return pointWindow != 0 && GetAncestor(pointWindow, GaRoot) == handle;
+        if (!GetCursorPos(out var nativePoint))
+        {
+            point = default;
+            return false;
+        }
+
+        point = new Point(nativePoint.X, nativePoint.Y);
+        return true;
     }
+
+    public static bool SetCursorPosition(Point point) => SetCursorPos((int)point.X, (int)point.Y);
+
+    public static nint WindowFromPoint(Point point) => WindowFromPoint(new NativePoint((int)point.X, (int)point.Y));
+
+    public static bool IsWindowOwnedBy(nint root, nint window) =>
+        root != 0 && window != 0 && GetAncestor(window, GaRoot) == root;
 
     public static bool PostWheel(nint handle, Point point, int delta)
     {
         var wParam = (nint)(delta << 16);
-        var lParam = (nint)(((point.Y & 0xFFFF) << 16) | (point.X & 0xFFFF));
+        var x = (int)point.X;
+        var y = (int)point.Y;
+        var lParam = (nint)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
         return PostMessage(handle, WmMouseWheel, wParam, lParam);
     }
 

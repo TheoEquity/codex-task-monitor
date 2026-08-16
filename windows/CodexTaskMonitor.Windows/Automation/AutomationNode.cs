@@ -10,7 +10,8 @@ public sealed record AutomationNode(
     Rect Bounds,
     bool IsOffscreen,
     IReadOnlyList<string> AncestorRuntimeIds,
-    int TraversalIndex);
+    int TraversalIndex,
+    nint NativeWindowHandle = 0);
 
 public sealed record AutomationSnapshot(Rect WindowBounds, IReadOnlyList<AutomationNode> Nodes);
 

@@ -44,167 +44,192 @@ public sealed class SidebarScrollController
 
         var started = time.GetTimestamp();
         var steps = 0;
-        var snapshot = await CaptureUntilDeadlineAsync(handle, started, token);
-        if (snapshot is null)
-            return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
-        var initial = MatchVisible(snapshot, target);
-        if (initial is not null)
-            return initial;
-
-        var region = SidebarRegionDetector.Detect(snapshot);
-        if (region is null)
-            return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-
-        var modes = new[]
+        try
         {
-            SidebarInputMode.AutomationPattern,
-            SidebarInputMode.PostedMessage,
-            SidebarInputMode.PhysicalFallback
-        };
-        SidebarInputMode? selectedMode = null;
-        var anyInputAccepted = false;
+            var snapshot = await CaptureAsync(handle, started, token);
+            var initial = MatchVisible(snapshot, target);
+            if (initial is not null)
+                return initial;
 
-        foreach (var mode in modes)
-        {
-            var stableAtTop = 0;
-            var previous = SidebarRegionDetector.Signature(snapshot, region.Value);
-            while (stableAtTop < 2)
+            var region = SidebarRegionDetector.Detect(snapshot);
+            if (region is null)
+                return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+
+            var modes = new[]
             {
-                var limit = CheckLimits(started, steps);
-                if (limit is not null)
-                    return limit;
+                SidebarInputMode.AutomationPattern,
+                SidebarInputMode.PostedMessage,
+                SidebarInputMode.PhysicalFallback
+            };
+            SidebarInputMode? selectedMode = null;
+            var anyInputAccepted = false;
 
+            foreach (var mode in modes)
+            {
+                var stableAtTop = 0;
+                var previous = SidebarRegionDetector.Signature(snapshot, region);
+                while (stableAtTop < 2)
+                {
+                    ThrowIfAtLimit(started, steps);
+                    steps++;
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, started, token))
+                        break;
+                    anyInputAccepted = true;
+                    await SettleAsync(started, token);
+                    snapshot = await CaptureAsync(handle, started, token);
+                    var observed = MatchVisible(snapshot, target);
+                    if (observed is not null)
+                        return observed;
+                    region = SidebarRegionDetector.Detect(snapshot);
+                    if (region is null)
+                        return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+                    var signature = SidebarRegionDetector.Signature(snapshot, region);
+                    stableAtTop = signature == previous ? stableAtTop + 1 : 0;
+                    previous = signature;
+                }
+
+                if (stableAtTop < 2)
+                    continue;
+
+                var stableProbe = 0;
+                var probeMoved = false;
+                while (stableProbe < 2 && !probeMoved)
+                {
+                    ThrowIfAtLimit(started, steps);
+                    steps++;
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Down, mode, started, token))
+                        break;
+                    anyInputAccepted = true;
+                    await SettleAsync(started, token);
+                    snapshot = await CaptureAsync(handle, started, token);
+                    var probeMatch = MatchVisible(snapshot, target);
+                    if (probeMatch is not null)
+                        return probeMatch;
+                    region = SidebarRegionDetector.Detect(snapshot);
+                    if (region is null)
+                        return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+                    var signature = SidebarRegionDetector.Signature(snapshot, region);
+                    stableProbe = signature == previous ? stableProbe + 1 : 0;
+                    probeMoved = signature != previous;
+                    previous = signature;
+                }
+
+                if (!probeMoved)
+                    continue;
+
+                var resetStable = 0;
+                previous = SidebarRegionDetector.Signature(snapshot, region);
+                while (resetStable < 2)
+                {
+                    ThrowIfAtLimit(started, steps);
+                    steps++;
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, started, token))
+                        return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+                    await SettleAsync(started, token);
+                    snapshot = await CaptureAsync(handle, started, token);
+                    var resetMatch = MatchVisible(snapshot, target);
+                    if (resetMatch is not null)
+                        return resetMatch;
+                    region = SidebarRegionDetector.Detect(snapshot);
+                    if (region is null)
+                        return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+                    var signature = SidebarRegionDetector.Signature(snapshot, region);
+                    resetStable = signature == previous ? resetStable + 1 : 0;
+                    previous = signature;
+                }
+
+                selectedMode = mode;
+                break;
+            }
+
+            if (selectedMode is null)
+                return new SidebarScrollResult(anyInputAccepted ? SidebarScrollStatus.NotFound : SidebarScrollStatus.RegionUnavailable, null);
+
+            var stableAtBottom = 0;
+            var lastSignature = SidebarRegionDetector.Signature(snapshot, region);
+            while (true)
+            {
+                var match = MatchVisible(snapshot, target);
+                if (match is not null)
+                    return match;
+
+                ThrowIfAtLimit(started, steps);
                 steps++;
-                if (!await input.ScrollAsync(handle, region.Value, ScrollDirection.Up, mode, token))
-                    break;
-                anyInputAccepted = true;
-                await Task.Delay(settleDelay, time, token);
-                snapshot = await CaptureUntilDeadlineAsync(handle, started, token);
-                if (snapshot is null)
-                    return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
+                if (!await ScrollAsync(handle, region, ScrollDirection.Down, selectedMode.Value, started, token))
+                    return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
+                await SettleAsync(started, token);
+                snapshot = await CaptureAsync(handle, started, token);
                 var observed = MatchVisible(snapshot, target);
                 if (observed is not null)
                     return observed;
                 region = SidebarRegionDetector.Detect(snapshot);
                 if (region is null)
                     return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-                var signature = SidebarRegionDetector.Signature(snapshot, region.Value);
-                stableAtTop = signature == previous ? stableAtTop + 1 : 0;
-                previous = signature;
+                var signature = SidebarRegionDetector.Signature(snapshot, region);
+                stableAtBottom = signature == lastSignature ? stableAtBottom + 1 : 0;
+                if (stableAtBottom >= 2)
+                    return new SidebarScrollResult(SidebarScrollStatus.NotFound, null);
+                lastSignature = signature;
             }
-
-            if (stableAtTop < 2)
-                continue;
-
-            var limitAtTop = CheckLimits(started, steps);
-            if (limitAtTop is not null)
-                return limitAtTop;
-            steps++;
-            if (!await input.ScrollAsync(handle, region.Value, ScrollDirection.Down, mode, token))
-                continue;
-            anyInputAccepted = true;
-            await Task.Delay(settleDelay, time, token);
-            var probe = await CaptureUntilDeadlineAsync(handle, started, token);
-            if (probe is null)
-                return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
-            var probeMatch = MatchVisible(probe, target);
-            if (probeMatch is not null)
-                return probeMatch;
-            region = SidebarRegionDetector.Detect(probe);
-            if (region is null)
-                return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-            if (SidebarRegionDetector.Signature(probe, region.Value) == previous)
-                continue;
-
-            snapshot = probe;
-            var resetStable = 0;
-            previous = SidebarRegionDetector.Signature(snapshot, region.Value);
-            while (resetStable < 2)
-            {
-                var resetLimit = CheckLimits(started, steps);
-                if (resetLimit is not null)
-                    return resetLimit;
-
-                steps++;
-                if (!await input.ScrollAsync(handle, region.Value, ScrollDirection.Up, mode, token))
-                    return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-                await Task.Delay(settleDelay, time, token);
-                snapshot = await CaptureUntilDeadlineAsync(handle, started, token);
-                if (snapshot is null)
-                    return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
-                var resetMatch = MatchVisible(snapshot, target);
-                if (resetMatch is not null)
-                    return resetMatch;
-                region = SidebarRegionDetector.Detect(snapshot);
-                if (region is null)
-                    return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-                var signature = SidebarRegionDetector.Signature(snapshot, region.Value);
-                resetStable = signature == previous ? resetStable + 1 : 0;
-                previous = signature;
-            }
-
-            selectedMode = mode;
-            break;
         }
-
-        if (selectedMode is null)
-            return new SidebarScrollResult(anyInputAccepted ? SidebarScrollStatus.NotFound : SidebarScrollStatus.RegionUnavailable, null);
-
-        var stableAtBottom = 0;
-        var lastSignature = SidebarRegionDetector.Signature(snapshot, region.Value);
-        while (true)
+        catch (DeadlineExceededException)
         {
-            var match = MatchVisible(snapshot, target);
-            if (match is not null)
-                return match;
-
-            var limit = CheckLimits(started, steps);
-            if (limit is not null)
-                return limit;
-            steps++;
-            if (!await input.ScrollAsync(handle, region.Value, ScrollDirection.Down, selectedMode.Value, token))
-                return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-            await Task.Delay(settleDelay, time, token);
-            snapshot = await CaptureUntilDeadlineAsync(handle, started, token);
-            if (snapshot is null)
-                return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
-            var observed = MatchVisible(snapshot, target);
-            if (observed is not null)
-                return observed;
-            region = SidebarRegionDetector.Detect(snapshot);
-            if (region is null)
-                return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
-            var signature = SidebarRegionDetector.Signature(snapshot, region.Value);
-            stableAtBottom = signature == lastSignature ? stableAtBottom + 1 : 0;
-            if (stableAtBottom >= 2)
-                return new SidebarScrollResult(SidebarScrollStatus.NotFound, null);
-            lastSignature = signature;
+            return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
+        }
+        catch (StepLimitReachedException)
+        {
+            return new SidebarScrollResult(SidebarScrollStatus.NotFound, null);
         }
     }
 
-    private SidebarScrollResult? CheckLimits(long started, int steps)
-    {
-        if (time.GetElapsedTime(started) >= timeout)
-            return new SidebarScrollResult(SidebarScrollStatus.TimedOut, null);
-        return steps >= maxSteps
-            ? new SidebarScrollResult(SidebarScrollStatus.NotFound, null)
-            : null;
-    }
+    private async Task<AutomationSnapshot> CaptureAsync(nint handle, long started, CancellationToken token) =>
+        await AwaitWithinDeadlineAsync(inner => snapshots.CaptureAsync(handle, inner), started, token);
 
-    private async Task<AutomationSnapshot?> CaptureUntilDeadlineAsync(nint handle, long started, CancellationToken token)
+    private async Task<bool> ScrollAsync(
+        nint handle,
+        SidebarScrollRegion region,
+        ScrollDirection direction,
+        SidebarInputMode mode,
+        long started,
+        CancellationToken token) =>
+        await AwaitWithinDeadlineAsync(inner => input.ScrollAsync(handle, region, direction, mode, inner), started, token);
+
+    private async Task SettleAsync(long started, CancellationToken token) =>
+        _ = await AwaitWithinDeadlineAsync(async inner =>
+        {
+            await Task.Delay(settleDelay, time, inner);
+            return true;
+        }, started, token);
+
+    private async Task<T> AwaitWithinDeadlineAsync<T>(Func<CancellationToken, Task<T>> operation, long started, CancellationToken token)
     {
         var remaining = timeout - time.GetElapsedTime(started);
         if (remaining <= TimeSpan.Zero)
-            return null;
+            throw new DeadlineExceededException();
 
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
         try
         {
-            return await snapshots.CaptureAsync(handle, token).WaitAsync(remaining, time, token);
+            var pending = Task.Run(() =>
+            {
+                linked.Token.ThrowIfCancellationRequested();
+                return operation(linked.Token);
+            }, CancellationToken.None);
+            return await pending.WaitAsync(remaining, time, token);
         }
         catch (TimeoutException)
         {
-            return null;
+            linked.Cancel();
+            throw new DeadlineExceededException();
         }
+    }
+
+    private void ThrowIfAtLimit(long started, int steps)
+    {
+        if (time.GetElapsedTime(started) >= timeout)
+            throw new DeadlineExceededException();
+        if (steps >= maxSteps)
+            throw new StepLimitReachedException();
     }
 
     private static SidebarScrollResult? MatchVisible(AutomationSnapshot snapshot, SidebarTarget target)
@@ -217,4 +242,7 @@ public sealed class SidebarScrollController
             _ => null
         };
     }
+
+    private sealed class DeadlineExceededException : Exception;
+    private sealed class StepLimitReachedException : Exception;
 }

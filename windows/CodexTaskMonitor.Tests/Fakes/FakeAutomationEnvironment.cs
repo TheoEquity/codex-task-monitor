@@ -7,6 +7,7 @@ public sealed class FakeAutomationEnvironment : IUiAutomationSnapshotProvider, I
 {
     private readonly IReadOnlyList<AutomationSnapshot> pages;
     private readonly HashSet<SidebarInputMode> acceptedModes;
+    private int delayedDownUpdates;
     private int index;
 
     private FakeAutomationEnvironment(
@@ -31,6 +32,16 @@ public sealed class FakeAutomationEnvironment : IUiAutomationSnapshotProvider, I
         SidebarInputMode[] modes,
         params AutomationSnapshot[] pages) => new(pages, startIndex, modes);
 
+    public static FakeAutomationEnvironment WithDelayedDownUpdate(
+        int startIndex,
+        int delayedDownUpdates,
+        params AutomationSnapshot[] pages)
+    {
+        var environment = new FakeAutomationEnvironment(pages, startIndex, [SidebarInputMode.AutomationPattern]);
+        environment.delayedDownUpdates = delayedDownUpdates;
+        return environment;
+    }
+
     public static FakeAutomationEnvironment Ambiguous(string title)
     {
         var nodes = new List<AutomationNode>();
@@ -47,7 +58,7 @@ public sealed class FakeAutomationEnvironment : IUiAutomationSnapshotProvider, I
         return Task.FromResult(pages[index]);
     }
 
-    public Task<bool> ScrollAsync(nint handle, Rect region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         Directions.Add(direction);
@@ -56,7 +67,10 @@ public sealed class FakeAutomationEnvironment : IUiAutomationSnapshotProvider, I
             return Task.FromResult(false);
 
         Actions.Add("scroll");
-        index = direction == ScrollDirection.Up ? Math.Max(0, index - 1) : Math.Min(pages.Count - 1, index + 1);
+        if (direction == ScrollDirection.Down && delayedDownUpdates > 0)
+            delayedDownUpdates--;
+        else
+            index = direction == ScrollDirection.Up ? Math.Max(0, index - 1) : Math.Min(pages.Count - 1, index + 1);
         return Task.FromResult(true);
     }
 }

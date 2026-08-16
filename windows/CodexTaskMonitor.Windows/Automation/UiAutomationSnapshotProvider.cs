@@ -11,6 +11,7 @@ internal interface IAutomationTreeNode
     string ClassName { get; }
     Rect Bounds { get; }
     bool IsOffscreen { get; }
+    nint NativeWindowHandle => 0;
     IEnumerable<IAutomationTreeNode> Children { get; }
 }
 
@@ -78,7 +79,8 @@ public sealed class UiAutomationSnapshotProvider : IUiAutomationSnapshotProvider
                     element.Bounds,
                     element.IsOffscreen,
                     ancestors,
-                    nodes.Count));
+                    nodes.Count,
+                    element.NativeWindowHandle));
 
                 var childAncestors = ancestors.Append(runtimeId).ToArray();
                 using var children = element.Children.GetEnumerator();
@@ -106,6 +108,7 @@ public sealed class UiAutomationSnapshotProvider : IUiAutomationSnapshotProvider
         public string ClassName => element.Current.ClassName ?? string.Empty;
         public Rect Bounds => element.Current.BoundingRectangle;
         public bool IsOffscreen => element.Current.IsOffscreen;
+        public nint NativeWindowHandle => (nint)element.Current.NativeWindowHandle;
 
         public IEnumerable<IAutomationTreeNode> Children
         {
