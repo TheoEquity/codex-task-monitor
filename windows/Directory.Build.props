@@ -11,4 +11,9 @@
       <_Parameter1>CodexTaskMonitor.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'CodexTaskMonitor.Core'">
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>CodexTaskMonitor.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 </Project>

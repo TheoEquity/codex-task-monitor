@@ -2,10 +2,23 @@ using CodexTaskMonitor.Core.Data;
 
 namespace CodexTaskMonitor.Core.Monitoring;
 
-public sealed class TaskMonitor(IThreadStore threadStore) : ITaskMonitor
+public sealed class TaskMonitor : ITaskMonitor
 {
     private const int TailReadBufferSize = 64 * 1024;
+    private readonly IThreadStore threadStore;
+    private readonly Action<string>? afterSignatureCaptured;
     private readonly Dictionary<string, CacheEntry> cache = new(StringComparer.OrdinalIgnoreCase);
+
+    public TaskMonitor(IThreadStore threadStore)
+        : this(threadStore, null)
+    {
+    }
+
+    internal TaskMonitor(IThreadStore threadStore, Action<string>? afterSignatureCaptured)
+    {
+        this.threadStore = threadStore;
+        this.afterSignatureCaptured = afterSignatureCaptured;
+    }
 
     public async Task<IReadOnlySet<string>> CurrentlyRunningTurnIdsAsync(DateTimeOffset since, CancellationToken cancellationToken)
     {
@@ -21,7 +34,9 @@ public sealed class TaskMonitor(IThreadStore threadStore) : ITaskMonitor
 
     public async Task<MonitorScanResult> ScanAsync(MonitorScanOptions options, CancellationToken cancellationToken)
     {
-        var (events, unreadable) = await LatestEventsAsync(options.Baseline.AddHours(-1), cancellationToken);
+        var threads = await threadStore.ReadThreadsAsync(options.Baseline.AddHours(-1), cancellationToken);
+        EvictCacheEntriesNotReferencedBy(threads);
+        var (events, unreadable) = await LatestEventsAsync(threads, cancellationToken);
         var items = events.Values
             .Select(pair => ToMonitorItem(pair, options))
             .OfType<MonitorItem>()
@@ -57,9 +72,16 @@ public sealed class TaskMonitor(IThreadStore threadStore) : ITaskMonitor
         DateTimeOffset updatedAfter,
         CancellationToken cancellationToken)
     {
+        var threads = await threadStore.ReadThreadsAsync(updatedAfter, cancellationToken);
+        return await LatestEventsAsync(threads, cancellationToken);
+    }
+
+    private async Task<(Dictionary<string, ThreadEvent> Events, int Unreadable)> LatestEventsAsync(
+        IReadOnlyList<ThreadRecord> threads,
+        CancellationToken cancellationToken)
+    {
         var events = new Dictionary<string, ThreadEvent>(StringComparer.Ordinal);
         var unreadable = 0;
-        var threads = await threadStore.ReadThreadsAsync(updatedAfter, cancellationToken);
 
         foreach (var thread in threads)
         {
@@ -88,6 +110,13 @@ public sealed class TaskMonitor(IThreadStore threadStore) : ITaskMonitor
         return (events, unreadable);
     }
 
+    private void EvictCacheEntriesNotReferencedBy(IReadOnlyList<ThreadRecord> threads)
+    {
+        var rolloutPaths = threads.Select(thread => thread.RolloutPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in cache.Keys.Where(path => !rolloutPaths.Contains(path)).ToArray())
+            cache.Remove(path);
+    }
+
     private void AddCachedEvent(ThreadRecord thread, Dictionary<string, ThreadEvent> events)
     {
         if (cache.TryGetValue(thread.RolloutPath, out var cached) && cached.Event is not null)
@@ -96,38 +125,68 @@ public sealed class TaskMonitor(IThreadStore threadStore) : ITaskMonitor
 
     private async Task<LifecycleEvent?> EventForAsync(string path, CancellationToken cancellationToken)
     {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var info = new FileInfo(path);
+            info.Refresh();
+            if (!info.Exists)
+                throw new CodexDataException(CodexDataError.Unreadable, "Rollout is missing");
+
+            var signature = FileSignature.From(info);
+            afterSignatureCaptured?.Invoke(path);
+            if (!HasSignature(path, signature))
+                continue;
+
+            if (cache.TryGetValue(path, out var cached) && cached.Signature == signature)
+                return cached.Event;
+
+            try
+            {
+                LifecycleEvent? lifecycleEvent;
+                long processedSize;
+                byte[] trailingFragment;
+                if (cached is not null && signature.IsContinuationOf(cached.Signature) && info.Length > cached.SnapshotSize)
+                {
+                    var appended = await ReadRangeAsync(path, cached.SnapshotSize, info.Length, cancellationToken);
+                    if (!HasSignature(path, signature))
+                        continue;
+
+                    var combined = new byte[checked(cached.TrailingFragment.Length + appended.Length)];
+                    cached.TrailingFragment.CopyTo(combined, 0);
+                    appended.CopyTo(combined, cached.TrailingFragment.Length);
+                    lifecycleEvent = RolloutParser.LatestAfter(cached.Event, combined);
+                    var lastNewline = Array.LastIndexOf(combined, (byte)'\n');
+                    processedSize = lastNewline < 0 ? cached.ProcessedSize : cached.ProcessedSize + lastNewline + 1L;
+                    trailingFragment = TrailingFragment(combined, lastNewline);
+                }
+                else
+                {
+                    lifecycleEvent = await RolloutParser.LatestAsync(path, cancellationToken);
+                    trailingFragment = await ReadTrailingFragmentAsync(path, info.Length, cancellationToken);
+                    processedSize = info.Length - trailingFragment.Length;
+                }
+
+                if (!HasSignature(path, signature))
+                    continue;
+
+                cache[path] = new CacheEntry(signature, lifecycleEvent, info.Length, processedSize, trailingFragment);
+                return lifecycleEvent;
+            }
+            catch (IOException) when (attempt == 0)
+            {
+                // The rollout changed during the snapshot; retry once with a new signature.
+            }
+        }
+
+        throw new CodexDataException(CodexDataError.Unreadable, "Rollout changed while reading");
+    }
+
+    private static bool HasSignature(string path, FileSignature expected)
+    {
         var info = new FileInfo(path);
         info.Refresh();
-        if (!info.Exists)
-            throw new CodexDataException(CodexDataError.Unreadable, "Rollout is missing");
-
-        var signature = FileSignature.From(info);
-        if (cache.TryGetValue(path, out var cached) && cached.Signature == signature)
-            return cached.Event;
-
-        LifecycleEvent? lifecycleEvent;
-        long processedSize;
-        byte[] trailingFragment;
-        if (cached is not null && signature.IsContinuationOf(cached.Signature) && info.Length > cached.SnapshotSize)
-        {
-            var appended = await ReadRangeAsync(path, cached.SnapshotSize, info.Length, cancellationToken);
-            var combined = new byte[checked(cached.TrailingFragment.Length + appended.Length)];
-            cached.TrailingFragment.CopyTo(combined, 0);
-            appended.CopyTo(combined, cached.TrailingFragment.Length);
-            lifecycleEvent = RolloutParser.LatestAfter(cached.Event, combined);
-            var lastNewline = Array.LastIndexOf(combined, (byte)'\n');
-            processedSize = lastNewline < 0 ? cached.ProcessedSize : cached.ProcessedSize + lastNewline + 1L;
-            trailingFragment = TrailingFragment(combined, lastNewline);
-        }
-        else
-        {
-            lifecycleEvent = await RolloutParser.LatestAsync(path, cancellationToken);
-            trailingFragment = await ReadTrailingFragmentAsync(path, info.Length, cancellationToken);
-            processedSize = info.Length - trailingFragment.Length;
-        }
-
-        cache[path] = new CacheEntry(signature, lifecycleEvent, info.Length, processedSize, trailingFragment);
-        return lifecycleEvent;
+        return info.Exists && FileSignature.From(info) == expected;
     }
 
     private static byte[] TrailingFragment(byte[] data, int lastNewline) =>

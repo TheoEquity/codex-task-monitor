@@ -89,8 +89,9 @@ public sealed class TaskMonitorTests
     [Fact]
     public async Task ReplacedRollout_IsNotTreatedAsAnAppend()
     {
-        var path = await WriteTemporaryRolloutAsync(Started("turn-before", 101));
-        var replacement = await WriteTemporaryRolloutAsync(Started("turn-after-rotation", 103) + new string('x', 1024) + "\n");
+        const int rolloutLength = 512;
+        var path = await WriteTemporaryRolloutAsync(SameLengthRollout(Started("turn-before", 101), rolloutLength));
+        var replacement = await WriteTemporaryRolloutAsync(SameLengthRollout(Started("turn-after-rotation", 103), rolloutLength));
         try
         {
             var monitor = new TaskMonitor(new FakeThreadStore(Record("thread", path)));
@@ -100,6 +101,42 @@ public sealed class TaskMonitorTests
             replacement = string.Empty;
 
             Assert.Equal("turn-after-rotation", (await monitor.ScanAsync(Options(), default)).Items.Single().TurnId);
+        }
+        finally
+        {
+            File.Delete(path);
+            if (!string.IsNullOrEmpty(replacement))
+                File.Delete(replacement);
+        }
+    }
+
+    [Fact]
+    public async Task ReplacementAfterSignatureCapture_IsRetriedWithoutCombiningOldTailAndNewBytes()
+    {
+        var initial = Started("turn-old", 101) +
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-old\",\"started_at\":101";
+        var path = await WriteTemporaryRolloutAsync(initial);
+        var replacement = string.Empty;
+        var replaceOnNextCapture = false;
+        try
+        {
+            var monitor = new TaskMonitor(new FakeThreadStore(Record("thread", path)), capturedPath =>
+            {
+                if (!replaceOnNextCapture)
+                    return;
+
+                File.Move(replacement, capturedPath, overwrite: true);
+                replacement = string.Empty;
+                replaceOnNextCapture = false;
+            });
+            await monitor.ScanAsync(Options(), default);
+            await File.AppendAllTextAsync(path, "x");
+            replacement = await WriteTemporaryRolloutAsync(SameLengthRollout(Started("turn-new", 103), new FileInfo(path).Length));
+            replaceOnNextCapture = true;
+
+            var result = await monitor.ScanAsync(Options(), default);
+
+            Assert.Equal("turn-new", result.Items.Single().TurnId);
         }
         finally
         {
@@ -121,6 +158,31 @@ public sealed class TaskMonitorTests
 
         Assert.Single(result.Items);
         Assert.Equal(1, result.UnreadableRolloutCount);
+    }
+
+    [Fact]
+    public async Task Scan_EvictsCacheForRolloutsNoLongerReturnedByThreadStore()
+    {
+        var path = await WriteTemporaryRolloutAsync(Started("turn-1", 101));
+        var record = Record("thread", path);
+        var store = new MutableThreadStore(record);
+        var monitor = new TaskMonitor(store);
+        try
+        {
+            await monitor.ScanAsync(Options(), default);
+            store.Records = [];
+            await monitor.ScanAsync(Options(), default);
+
+            File.Delete(path);
+            store.Records = [record];
+
+            var error = await Assert.ThrowsAsync<CodexDataException>(() => monitor.ScanAsync(Options(), default));
+            Assert.Equal(CodexDataError.Unreadable, error.Error);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
@@ -244,6 +306,12 @@ public sealed class TaskMonitorTests
     private static string Completed(string turnId, long startedAt, long completedAt) =>
         "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"" + turnId + "\",\"started_at\":" + startedAt + ",\"completed_at\":" + completedAt + "}}\n";
 
+    private static string SameLengthRollout(string lifecycleLine, long length)
+    {
+        var paddingLength = checked((int)(length - lifecycleLine.Length - 1));
+        return lifecycleLine + new string('x', paddingLength) + "\n";
+    }
+
     private static async Task<string> WriteTemporaryRolloutAsync(string contents)
     {
         var path = Path.Combine(Path.GetTempPath(), $"monitor-{Guid.NewGuid():N}.jsonl");
@@ -255,5 +323,13 @@ public sealed class TaskMonitorTests
     {
         public Task<IReadOnlyList<ThreadRecord>> ReadThreadsAsync(DateTimeOffset updatedAfter, CancellationToken token) =>
             Task.FromResult<IReadOnlyList<ThreadRecord>>(records.Where(record => record.UpdatedAt >= updatedAfter).ToArray());
+    }
+
+    private sealed class MutableThreadStore(params ThreadRecord[] records) : IThreadStore
+    {
+        public ThreadRecord[] Records { get; set; } = records;
+
+        public Task<IReadOnlyList<ThreadRecord>> ReadThreadsAsync(DateTimeOffset updatedAfter, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<ThreadRecord>>(Records.Where(record => record.UpdatedAt >= updatedAfter).ToArray());
     }
 }
