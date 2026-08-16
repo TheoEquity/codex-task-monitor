@@ -156,12 +156,21 @@ foreach ($expectedRun in @(
     Assert-Condition (@(Find-WorkflowStep $steps 'run' $expectedRun).Count -eq 1) "Workflow is missing the required command: $expectedRun"
 }
 
-$artifactStep = @(Find-WorkflowStep $steps 'uses' 'actions/upload-artifact@v4')
-Assert-Condition ($artifactStep.Count -eq 1) 'Workflow must upload the packaged Windows outputs.'
+$artifactSteps = @(Find-WorkflowStep $steps 'uses' 'actions/upload-artifact@v4')
+$artifactStep = @($artifactSteps | Where-Object {
+    (Get-ObjectProperty (Get-ObjectProperty $_ 'with') 'name') -eq 'Codex-Task-Monitor-Windows-x64'
+})
+Assert-Condition ($artifactStep.Count -eq 1) 'Workflow must upload the combined Windows package artifact once.'
 $artifactPaths = @(("$(Get-ObjectProperty (Get-ObjectProperty $artifactStep[0] 'with') 'path')" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }))
 foreach ($artifactPath in @('windows/publish/win-x64/**', 'windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe', 'windows/CodexTaskMonitor.Tests/TestResults/**')) {
     Assert-Condition ($artifactPaths -contains $artifactPath) "Workflow artifact upload is missing: $artifactPath"
 }
+$installerArtifact = @($artifactSteps | Where-Object {
+    (Get-ObjectProperty (Get-ObjectProperty $_ 'with') 'name') -eq 'Codex-Task-Monitor-Windows-x64-Installer'
+})
+Assert-Condition ($installerArtifact.Count -eq 1) 'Workflow must upload the installer as its own artifact once.'
+$installerUploadPaths = @(("$(Get-ObjectProperty (Get-ObjectProperty $installerArtifact[0] 'with') 'path')" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }))
+Assert-Condition ($installerUploadPaths.Count -eq 1 -and $installerUploadPaths[0] -eq 'windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe') 'Installer artifact must contain only the installer output.'
 
 $releaseStepsInPackageJob = @(Find-WorkflowStep $steps 'name' 'Create or update tag release')
 Assert-Condition ($releaseStepsInPackageJob.Count -eq 0) 'Packaging must not receive release-write capability.'
@@ -174,7 +183,7 @@ $releaseSteps = @(Get-ObjectProperty $releaseJob 'steps')
 $download = @(Find-WorkflowStep $releaseSteps 'uses' 'actions/download-artifact@v4')
 Assert-Condition ($download.Count -eq 1) 'Release job must download the packaged artifact.'
 $downloadWith = Get-ObjectProperty $download[0] 'with'
-Assert-Condition ((Get-ObjectProperty $downloadWith 'name') -eq 'Codex-Task-Monitor-Windows-x64') 'Release job must download the Windows package artifact.'
+Assert-Condition ((Get-ObjectProperty $downloadWith 'name') -eq 'Codex-Task-Monitor-Windows-x64-Installer') 'Release job must download the standalone installer artifact.'
 Assert-Condition ((Get-ObjectProperty $downloadWith 'path') -eq 'windows/artifacts') 'Release job must download the installer to its upload path.'
 $releaseStep = @(Find-WorkflowStep $releaseSteps 'name' 'Create or update tag release')
 Assert-Condition ($releaseStep.Count -eq 1) 'Workflow must include the tag release upload step.'

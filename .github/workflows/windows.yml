@@ -50,6 +50,10 @@ jobs:
             windows/publish/win-x64/**
             windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe
             windows/CodexTaskMonitor.Tests/TestResults/**
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Task-Monitor-Windows-x64-Installer
+          path: windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -60,7 +64,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: Codex-Task-Monitor-Windows-x64
+          name: Codex-Task-Monitor-Windows-x64-Installer
           path: windows/artifacts
       - name: Create or update tag release
         shell: pwsh
