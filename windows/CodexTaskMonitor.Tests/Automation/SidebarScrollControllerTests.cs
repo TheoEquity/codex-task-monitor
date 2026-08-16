@@ -206,13 +206,37 @@ public sealed class SidebarScrollControllerTests
     }
 
     [Fact]
+    public void Detect_RejectsSidebarsThatOnlyShareACommonHost()
+    {
+        var snapshot = new AutomationSnapshot(new Rect(0, 0, 1000, 800),
+        [
+            new AutomationNode("sidebar-a", "ControlType.List", "", "", new Rect(10, 20, 200, 160), false, ["root"], 0),
+            new AutomationNode("sidebar-b", "ControlType.List", "", "", new Rect(240, 20, 200, 160), false, ["root"], 1),
+            Node("a", 20, ["root", "sidebar-a"]),
+            Node("b", 60, ["root", "sidebar-b"]),
+            Node("c", 100, ["root", "sidebar-a"]),
+            Node("d", 140, ["root", "sidebar-b"])
+        ]);
+
+        Assert.Null(SidebarRegionDetector.Detect(snapshot));
+    }
+
+    [Fact]
+    public void Detect_RejectsAnAnchorWithoutTheSameHitTestWindowAsEverySidebarItem()
+    {
+        var snapshot = SidebarSnapshot(0, 55, 55, 55);
+
+        Assert.Null(SidebarRegionDetector.Detect(snapshot));
+    }
+
+    [Fact]
     public async Task NativeInput_UsesOneWheelWithExpectedDirectionAndRestoresAfterSendFailure()
     {
         var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 55, SendWheelResult = false, ForegroundAfterSend = 456 };
         var input = new NativeSidebarWheelInput(api);
         var region = Region(expectedHitTestWindow: 55);
 
-        var result = await input.ScrollAsync(123, region, ScrollDirection.Down, SidebarInputMode.PhysicalFallback, default);
+        var result = await input.ScrollAsync(123, region, ScrollDirection.Down, SidebarInputMode.PhysicalFallback, Permit(), default);
 
         Assert.False(result);
         Assert.Equal([-240], api.WheelDeltas);
@@ -226,7 +250,7 @@ public sealed class SidebarScrollControllerTests
         var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 99 };
         var input = new NativeSidebarWheelInput(api);
 
-        var result = await input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PostedMessage, default);
+        var result = await input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PostedMessage, Permit(), default);
 
         Assert.False(result);
         Assert.Empty(api.WheelDeltas);
@@ -242,30 +266,87 @@ public sealed class SidebarScrollControllerTests
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PhysicalFallback, cancellation.Token));
+            input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Up, SidebarInputMode.PhysicalFallback, Permit(), cancellation.Token));
 
         Assert.Empty(api.WheelDeltas);
         Assert.Equal(new Point(4, 5), api.Cursor);
     }
 
+    [Fact]
+    public async Task NativeInput_RestoresCursorAndForegroundWhenCancellationArrivesAfterCursorMove()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var api = new FakeNativeWheelApi { Foreground = 123, PointWindow = 55, CancelAfterCursorMove = cancellation };
+        var input = new NativeSidebarWheelInput(api);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            input.ScrollAsync(123, Region(expectedHitTestWindow: 55), ScrollDirection.Down, SidebarInputMode.PhysicalFallback, Permit(), cancellation.Token));
+
+        Assert.Empty(api.WheelDeltas);
+        Assert.Equal(new Point(4, 5), api.Cursor);
+        Assert.Equal((nint)123, api.Foreground);
+    }
+
+    [Fact]
+    public async Task Reveal_ExpiresPermitBeforeABlockedInputCanPerformItsLateEffect()
+    {
+        var environment = FakeAutomationEnvironment.WithPages(0, Page("top"));
+        var input = new BlockingBeforeEffectInput();
+        var controller = new SidebarScrollController(environment, input, TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromMilliseconds(50));
+
+        var result = await controller.RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+        input.Release.Set();
+        Assert.True(input.Finished.Wait(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal(SidebarScrollStatus.TimedOut, result.Status);
+        Assert.Equal(0, input.EffectCount);
+    }
+
+    [Fact]
+    public void Permit_AuthorizesOnlyItsFirstEffectBeforeDeadline()
+    {
+        var authorization = new ScrollEffectAuthorization(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(1), default);
+        var permit = authorization.CreatePermit();
+
+        Assert.True(permit.TryAuthorize());
+        Assert.False(permit.TryAuthorize());
+    }
+
     private static AutomationSnapshot Page(string key, string? targetTitle = null, bool targetOffscreen = false)
     {
-        var nodes = new List<AutomationNode>();
+        var nodes = new List<AutomationNode>
+        {
+            new("sidebar", "ControlType.List", "", "", new Rect(10, 20, 200, 180), false, ["root"], 0)
+        };
         for (var item = 0; item < 4; item++)
             nodes.Add(new($"{key}-{item}", "ControlType.ListItem", $"{key}-filler-{item}", "",
-                new Rect(10, 20 + item * 40, 200, 30), false, ["root", "sidebar"], item));
+                new Rect(10, 20 + item * 40, 200, 30), false, ["root", "sidebar"], item + 1));
         if (targetTitle is not null)
             nodes.Add(new($"{key}-target", "ControlType.ListItem", targetTitle, "",
                 targetOffscreen ? Rect.Empty : new Rect(10, 160, 200, 30), targetOffscreen,
-                ["root", "sidebar"], 4));
+                ["root", "sidebar"], 5));
         return new AutomationSnapshot(new Rect(0, 0, 1000, 800), nodes);
     }
 
     private static AutomationNode Node(string id, double top, string[] ancestors) =>
         new(id, "ControlType.ListItem", id, "", new Rect(10, top, 200, 30), false, ancestors, (int)top);
 
+    private static AutomationSnapshot SidebarSnapshot(params nint[] itemWindows)
+    {
+        var nodes = new List<AutomationNode>
+        {
+            new("sidebar", "ControlType.List", "", "", new Rect(10, 20, 200, 160), false, ["root"], 0)
+        };
+        for (var index = 0; index < itemWindows.Length; index++)
+            nodes.Add(new AutomationNode($"item-{index}", "ControlType.ListItem", "", "", new Rect(10, 20 + index * 40, 200, 30), false, ["root", "sidebar"], index + 1, itemWindows[index]));
+        return new AutomationSnapshot(new Rect(0, 0, 1000, 800), nodes);
+    }
+
     private static SidebarScrollRegion Region(nint expectedHitTestWindow) =>
         new(new Rect(10, 20, 200, 150), new Point(22, 75), "sidebar", "item", expectedHitTestWindow);
+
+    private static IScrollEffectPermit Permit() =>
+        new ScrollEffectAuthorization(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(1), default).CreatePermit();
 
     private sealed class HangingSnapshotProvider : IUiAutomationSnapshotProvider
     {
@@ -282,7 +363,7 @@ public sealed class SidebarScrollControllerTests
     {
         public bool CancellationObserved { get; private set; }
 
-        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
         {
             token.Register(() => CancellationObserved = true);
             return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
@@ -291,16 +372,32 @@ public sealed class SidebarScrollControllerTests
 
     private sealed class NeverCalledScrollInput : ISidebarScrollInput
     {
-        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token) =>
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token) =>
             throw new InvalidOperationException("Input should not be called while snapshot is hung.");
     }
 
     private sealed class BlockingScrollInput : ISidebarScrollInput
     {
-        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
         {
             Thread.Sleep(TimeSpan.FromMilliseconds(500));
             return Task.FromResult(true);
+        }
+    }
+
+    private sealed class BlockingBeforeEffectInput : ISidebarScrollInput
+    {
+        public ManualResetEventSlim Release { get; } = new();
+        public ManualResetEventSlim Finished { get; } = new();
+        public int EffectCount { get; private set; }
+
+        public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
+        {
+            Release.Wait();
+            if (permit.TryAuthorize())
+                EffectCount++;
+            Finished.Set();
+            return Task.FromResult(EffectCount > 0);
         }
     }
 
@@ -310,6 +407,7 @@ public sealed class SidebarScrollControllerTests
         public nint Foreground { get; set; }
         public nint PointWindow { get; set; }
         public nint ForegroundAfterSend { get; set; }
+        public CancellationTokenSource? CancelAfterCursorMove { get; set; }
         public bool SendWheelResult { get; set; } = true;
         public List<int> WheelDeltas { get; } = [];
         public List<int> PostedDeltas { get; } = [];
@@ -323,6 +421,7 @@ public sealed class SidebarScrollControllerTests
         public bool SetCursorPosition(Point point)
         {
             Cursor = point;
+            CancelAfterCursorMove?.Cancel();
             return true;
         }
 

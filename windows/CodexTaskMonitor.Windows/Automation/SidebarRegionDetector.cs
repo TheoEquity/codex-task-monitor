@@ -15,12 +15,11 @@ public static class SidebarRegionDetector
         if (items.Length < 3)
             return null;
 
-        var containerPath = CommonContainerPath(items);
-        if (containerPath is null)
+        var directContainers = items.Select(node => node.AncestorRuntimeIds.LastOrDefault()).Distinct(StringComparer.Ordinal).ToArray();
+        if (directContainers.Length != 1 || string.IsNullOrEmpty(directContainers[0]))
             return null;
-
-        var expectedHitTestWindows = items.Select(node => node.NativeWindowHandle).Where(handle => handle != 0).Distinct().ToArray();
-        if (expectedHitTestWindows.Length > 1)
+        var containerId = directContainers[0]!;
+        if (snapshot.Nodes.Count(node => node.RuntimeId == containerId && node.ControlType == "ControlType.List") != 1)
             return null;
 
         var left = items.Min(node => node.Bounds.Left);
@@ -32,11 +31,13 @@ public static class SidebarRegionDetector
             return null;
 
         var anchor = items.OrderBy(node => Math.Abs(node.Bounds.Top + node.Bounds.Height / 2 - (region.Top + region.Height / 2))).First();
+        if (items.Any(node => node.NativeWindowHandle != anchor.NativeWindowHandle))
+            return null;
         var inputPoint = new Point(
             Math.Min(anchor.Bounds.Right - 1, anchor.Bounds.Left + Math.Min(12, anchor.Bounds.Width / 2)),
             anchor.Bounds.Top + anchor.Bounds.Height / 2);
         return anchor.Bounds.Contains(inputPoint)
-            ? new SidebarScrollRegion(region, inputPoint, containerPath[^1], anchor.RuntimeId, expectedHitTestWindows.SingleOrDefault())
+            ? new SidebarScrollRegion(region, inputPoint, containerId, anchor.RuntimeId, anchor.NativeWindowHandle)
             : null;
     }
 
@@ -51,17 +52,4 @@ public static class SidebarRegionDetector
             .Select(node => $"{node.RuntimeId}:{node.Bounds.Top:0}"));
     }
 
-    private static string[]? CommonContainerPath(IReadOnlyList<AutomationNode> items)
-    {
-        var common = items[0].AncestorRuntimeIds.ToArray();
-        foreach (var item in items.Skip(1))
-        {
-            var length = 0;
-            while (length < common.Length && length < item.AncestorRuntimeIds.Count && common[length] == item.AncestorRuntimeIds[length])
-                length++;
-            common = common[..length];
-        }
-
-        return common.Length >= 2 ? common : null;
-    }
 }

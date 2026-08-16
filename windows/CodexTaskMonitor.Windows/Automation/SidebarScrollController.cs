@@ -14,7 +14,7 @@ public sealed class SidebarScrollController
     private readonly TimeSpan settleDelay;
     private readonly TimeSpan timeout;
 
-    public SidebarScrollController(
+    internal SidebarScrollController(
         IUiAutomationSnapshotProvider snapshots,
         ISidebarScrollInput input,
         TimeProvider time,
@@ -43,6 +43,7 @@ public sealed class SidebarScrollController
         token.ThrowIfCancellationRequested();
 
         var started = time.GetTimestamp();
+        var effects = new ScrollEffectAuthorization(time, started, timeout, token);
         var steps = 0;
         try
         {
@@ -72,7 +73,7 @@ public sealed class SidebarScrollController
                 {
                     ThrowIfAtLimit(started, steps);
                     steps++;
-                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, started, token))
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, effects, started, token))
                         break;
                     anyInputAccepted = true;
                     await SettleAsync(started, token);
@@ -97,7 +98,7 @@ public sealed class SidebarScrollController
                 {
                     ThrowIfAtLimit(started, steps);
                     steps++;
-                    if (!await ScrollAsync(handle, region, ScrollDirection.Down, mode, started, token))
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Down, mode, effects, started, token))
                         break;
                     anyInputAccepted = true;
                     await SettleAsync(started, token);
@@ -123,7 +124,7 @@ public sealed class SidebarScrollController
                 {
                     ThrowIfAtLimit(started, steps);
                     steps++;
-                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, started, token))
+                    if (!await ScrollAsync(handle, region, ScrollDirection.Up, mode, effects, started, token))
                         return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
                     await SettleAsync(started, token);
                     snapshot = await CaptureAsync(handle, started, token);
@@ -155,7 +156,7 @@ public sealed class SidebarScrollController
 
                 ThrowIfAtLimit(started, steps);
                 steps++;
-                if (!await ScrollAsync(handle, region, ScrollDirection.Down, selectedMode.Value, started, token))
+                if (!await ScrollAsync(handle, region, ScrollDirection.Down, selectedMode.Value, effects, started, token))
                     return new SidebarScrollResult(SidebarScrollStatus.RegionUnavailable, null);
                 await SettleAsync(started, token);
                 snapshot = await CaptureAsync(handle, started, token);
@@ -180,6 +181,10 @@ public sealed class SidebarScrollController
         {
             return new SidebarScrollResult(SidebarScrollStatus.NotFound, null);
         }
+        finally
+        {
+            effects.Expire();
+        }
     }
 
     private async Task<AutomationSnapshot> CaptureAsync(nint handle, long started, CancellationToken token) =>
@@ -190,9 +195,10 @@ public sealed class SidebarScrollController
         SidebarScrollRegion region,
         ScrollDirection direction,
         SidebarInputMode mode,
+        ScrollEffectAuthorization effects,
         long started,
         CancellationToken token) =>
-        await AwaitWithinDeadlineAsync(inner => input.ScrollAsync(handle, region, direction, mode, inner), started, token);
+        await AwaitWithinDeadlineAsync(inner => input.ScrollAsync(handle, region, direction, mode, effects.CreatePermit(), inner), started, token);
 
     private async Task SettleAsync(long started, CancellationToken token) =>
         _ = await AwaitWithinDeadlineAsync(async inner =>

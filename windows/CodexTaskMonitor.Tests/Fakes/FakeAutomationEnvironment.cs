@@ -58,7 +58,7 @@ public sealed class FakeAutomationEnvironment : IUiAutomationSnapshotProvider, I
         return Task.FromResult(pages[index]);
     }
 
-    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    Task<bool> ISidebarScrollInput.ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         Directions.Add(direction);

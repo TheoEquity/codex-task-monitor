@@ -3,9 +3,9 @@ using System.Windows.Automation;
 
 namespace CodexTaskMonitor.Windows.Automation;
 
-public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
+public sealed class UiAutomationSidebarScrollInput
 {
-    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    internal Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
     {
         if (mode != SidebarInputMode.AutomationPattern)
             return Task.FromResult(false);
@@ -15,7 +15,7 @@ public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
         {
             try
             {
-                completion.TrySetResult(Scroll(handle, region, direction, token));
+                completion.TrySetResult(Scroll(handle, region, direction, permit, token));
             }
             catch (OperationCanceledException)
             {
@@ -35,7 +35,7 @@ public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
         return completion.Task;
     }
 
-    private static bool Scroll(nint handle, SidebarScrollRegion region, ScrollDirection direction, CancellationToken token)
+    private static bool Scroll(nint handle, SidebarScrollRegion region, ScrollDirection direction, IScrollEffectPermit permit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         try
@@ -53,6 +53,8 @@ public sealed class UiAutomationSidebarScrollInput : ISidebarScrollInput
                 if (!candidate.Element.TryGetCurrentPattern(ScrollPattern.Pattern, out var value) ||
                     value is not ScrollPattern pattern || !pattern.Current.VerticallyScrollable)
                     continue;
+                if (!permit.TryAuthorize())
+                    return false;
                 pattern.Scroll(ScrollAmount.NoAmount,
                     direction == ScrollDirection.Up ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement);
                 return true;

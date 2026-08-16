@@ -16,23 +16,23 @@ public sealed class NativeSidebarWheelInput
         this.api = api ?? throw new ArgumentNullException(nameof(api));
     }
 
-    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token)
+    internal Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         var delta = direction == ScrollDirection.Up ? 240 : -240;
 
         return mode switch
         {
-            SidebarInputMode.PostedMessage => Task.FromResult(ScrollPosted(handle, region, delta)),
-            SidebarInputMode.PhysicalFallback => Task.FromResult(ScrollPhysical(handle, region, delta, token)),
+            SidebarInputMode.PostedMessage => Task.FromResult(ScrollPosted(handle, region, delta, permit)),
+            SidebarInputMode.PhysicalFallback => Task.FromResult(ScrollPhysical(handle, region, delta, permit, token)),
             _ => Task.FromResult(false)
         };
     }
 
-    private bool ScrollPosted(nint handle, SidebarScrollRegion region, int delta) =>
-        TryValidatePoint(handle, region, out var hitTestWindow) && api.PostWheel(hitTestWindow, region.InputPoint, delta);
+    private bool ScrollPosted(nint handle, SidebarScrollRegion region, int delta, IScrollEffectPermit permit) =>
+        TryValidatePoint(handle, region, out var hitTestWindow) && permit.TryAuthorize() && api.PostWheel(hitTestWindow, region.InputPoint, delta);
 
-    private bool ScrollPhysical(nint handle, SidebarScrollRegion region, int delta, CancellationToken token)
+    private bool ScrollPhysical(nint handle, SidebarScrollRegion region, int delta, IScrollEffectPermit permit, CancellationToken token)
     {
         var originalForeground = api.GetForegroundWindow();
         if (!api.GetCursorPosition(out var originalCursor))
@@ -48,6 +48,8 @@ public sealed class NativeSidebarWheelInput
             if (api.GetForegroundWindow() != handle || !TryValidatePoint(handle, region, out _))
                 return false;
             token.ThrowIfCancellationRequested();
+            if (!permit.TryAuthorize())
+                return false;
             return api.SendWheel(delta);
         }
         finally

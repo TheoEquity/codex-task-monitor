@@ -7,8 +7,8 @@ public sealed class SidebarScrollInput(
     UiAutomationSidebarScrollInput automation,
     NativeSidebarWheelInput native) : ISidebarScrollInput
 {
-    public Task<bool> ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, CancellationToken token) =>
+    Task<bool> ISidebarScrollInput.ScrollAsync(nint handle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token) =>
         mode == SidebarInputMode.AutomationPattern
-            ? automation.ScrollAsync(handle, region, direction, mode, token)
-            : native.ScrollAsync(handle, region, direction, mode, token);
+            ? automation.ScrollAsync(handle, region, direction, mode, permit, token)
+            : native.ScrollAsync(handle, region, direction, mode, permit, token);
 }
