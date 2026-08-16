@@ -120,11 +120,12 @@ else {
     $workflowObject = $workflowJson | ConvertFrom-Json
 }
 
-Assert-Condition ((Get-ObjectProperty (Get-ObjectProperty $workflowObject 'permissions') 'contents') -eq 'write') 'Workflow must grant contents: write for tag releases.'
+Assert-Condition ((Get-ObjectProperty (Get-ObjectProperty $workflowObject 'permissions') 'contents') -eq 'read') 'Workflow defaults must grant only contents: read.'
 $jobs = Get-ObjectProperty $workflowObject 'jobs'
 $packageJob = Get-ObjectProperty $jobs 'build-test-package'
 Assert-Condition ($null -ne $packageJob) 'Workflow must define the build-test-package job.'
 Assert-Condition ((Get-ObjectProperty $packageJob 'runs-on') -eq 'windows-latest') 'Packaging job must run on windows-latest.'
+Assert-Condition ((Get-ObjectProperty (Get-ObjectProperty $packageJob 'permissions') 'contents') -eq 'read') 'Packaging job must grant only contents: read.'
 $steps = @(Get-ObjectProperty $packageJob 'steps')
 
 $checkout = @(Find-WorkflowStep $steps 'uses' 'actions/checkout@v4')
@@ -162,9 +163,21 @@ foreach ($artifactPath in @('windows/publish/win-x64/**', 'windows/artifacts/Cod
     Assert-Condition ($artifactPaths -contains $artifactPath) "Workflow artifact upload is missing: $artifactPath"
 }
 
-$releaseStep = @(Find-WorkflowStep $steps 'name' 'Create or update tag release')
+$releaseStepsInPackageJob = @(Find-WorkflowStep $steps 'name' 'Create or update tag release')
+Assert-Condition ($releaseStepsInPackageJob.Count -eq 0) 'Packaging must not receive release-write capability.'
+$releaseJob = Get-ObjectProperty $jobs 'release'
+Assert-Condition ($null -ne $releaseJob) 'Workflow must define a separate release job.'
+Assert-Condition ((Get-ObjectProperty $releaseJob 'needs') -eq 'build-test-package') 'Release job must wait for packaging.'
+Assert-Condition ((Get-ObjectProperty $releaseJob 'if') -eq "startsWith(github.ref, 'refs/tags/v')") 'Release job must only run for v* tags.'
+Assert-Condition ((Get-ObjectProperty (Get-ObjectProperty $releaseJob 'permissions') 'contents') -eq 'write') 'Only the release job may grant contents: write.'
+$releaseSteps = @(Get-ObjectProperty $releaseJob 'steps')
+$download = @(Find-WorkflowStep $releaseSteps 'uses' 'actions/download-artifact@v4')
+Assert-Condition ($download.Count -eq 1) 'Release job must download the packaged artifact.'
+$downloadWith = Get-ObjectProperty $download[0] 'with'
+Assert-Condition ((Get-ObjectProperty $downloadWith 'name') -eq 'Codex-Task-Monitor-Windows-x64') 'Release job must download the Windows package artifact.'
+Assert-Condition ((Get-ObjectProperty $downloadWith 'path') -eq 'windows/artifacts') 'Release job must download the installer to its upload path.'
+$releaseStep = @(Find-WorkflowStep $releaseSteps 'name' 'Create or update tag release')
 Assert-Condition ($releaseStep.Count -eq 1) 'Workflow must include the tag release upload step.'
-Assert-Condition ((Get-ObjectProperty $releaseStep[0] 'if') -eq "startsWith(github.ref, 'refs/tags/v')") 'Release upload must only run for v* tags.'
 Assert-Contains (Get-ObjectProperty $releaseStep[0] 'run') 'gh release upload $tag windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe --clobber' $workflowPath
 
 foreach ($generatedPath in @('windows/publish/win-x64/CodexTaskMonitor.exe', 'windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe')) {
