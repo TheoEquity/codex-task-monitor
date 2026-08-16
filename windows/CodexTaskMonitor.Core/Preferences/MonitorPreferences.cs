@@ -24,7 +24,7 @@ public sealed record MonitorPreferences
         Baseline = baseline;
         AdoptedTurnIds = Freeze(adoptedTurnIds);
         DismissedTurnIds = Freeze(dismissedTurnIds);
-        DismissedItemIds = Freeze(dismissedItemIds);
+        DismissedItemIds = FreezeHandledItemIds(dismissedItemIds);
         WindowLeft = windowLeft;
         WindowTop = windowTop;
         LaunchAtLoginEnabled = launchAtLoginEnabled;
@@ -53,7 +53,7 @@ public sealed record MonitorPreferences
     public MonitorPreferences WithLaunchAtLogin(bool enabled) =>
         this with { LaunchAtLoginEnabled = enabled };
 
-    private static bool IsExactHandledItemKey(string? itemId)
+    internal static bool IsExactHandledItemKey(string? itemId)
     {
         if (string.IsNullOrWhiteSpace(itemId) || itemId.Any(char.IsWhiteSpace))
             return false;
@@ -64,4 +64,13 @@ public sealed record MonitorPreferences
 
     private static IReadOnlySet<string> Freeze(IEnumerable<string> values) =>
         values.ToFrozenSet(StringComparer.Ordinal);
+
+    private static IReadOnlySet<string> FreezeHandledItemIds(IEnumerable<string> values)
+    {
+        var frozen = Freeze(values);
+        if (frozen.Any(itemId => !IsExactHandledItemKey(itemId)))
+            throw new ArgumentException("Handled item identifiers must be exact threadId:turnId pairs.", nameof(values));
+
+        return frozen;
+    }
 }
