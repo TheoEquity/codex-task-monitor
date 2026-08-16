@@ -48,7 +48,7 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | F7B7F2C18709976A88A76CCACC25F926F98D359E0869D5AA8BDBE3538229E722 |
+| Installer SHA-256 | AE802CAFF7DCBE940DB0C2038512486551DBAC97431A233C8781899A71DE565B |
 | Test commit SHA | 6b9d2b858e95b40c7be2e6a7e2496db28cfe0e33 |
 | Pass date | 2026-08-16 |
 
