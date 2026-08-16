@@ -4,6 +4,30 @@ namespace CodexTaskMonitor.Tests.Data;
 
 public sealed class CodexDataPathsTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void ForHome_RejectsInvalidHomeDirectory(string? homeDirectory)
+    {
+        var exception = Assert.ThrowsAny<ArgumentException>(() =>
+            CodexDataPaths.ForHome(homeDirectory!, @"D:\LocalAppData"));
+
+        Assert.Equal(nameof(homeDirectory), exception.ParamName);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void ForHome_RejectsInvalidLocalAppDataDirectory(string? localAppDataDirectory)
+    {
+        var exception = Assert.ThrowsAny<ArgumentException>(() =>
+            CodexDataPaths.ForHome(@"C:\Users\Tester", localAppDataDirectory!));
+
+        Assert.Equal(nameof(localAppDataDirectory), exception.ParamName);
+    }
+
     [Fact]
     public void ForHome_UsesCodexAndLocalAppDataRoots()
     {
