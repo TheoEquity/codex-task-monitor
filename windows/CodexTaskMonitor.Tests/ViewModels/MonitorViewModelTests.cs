@@ -102,6 +102,128 @@ public sealed class MonitorViewModelTests
     }
 
     [Fact]
+    public async Task Dispose_WhileRefreshIsActive_CancelsAndAwaitsTheRefresh()
+    {
+        var firstScan = new TaskCompletionSource<MonitorScanResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new FakeTaskMonitor(Set(), []) { FirstScan = firstScan, FirstScanHonorsCancellation = true };
+        var viewModel = Create(monitor, new FakePreferencesStore(new(DateTimeOffset.UtcNow, [], [], [], null, null, true)));
+
+        var refresh = viewModel.RefreshAsync(CancellationToken.None);
+        await monitor.FirstScanStarted.Task;
+
+        await viewModel.DisposeAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => refresh);
+    }
+
+    [Fact]
+    public async Task Open_ActivationFailureShowsRecoverablePrivacySafeError()
+    {
+        var activation = new FakeActivation { Exception = new InvalidOperationException("secret detail") };
+        var viewModel = new MonitorViewModel(
+            new FakeTaskMonitor(Set(), []),
+            new FakePreferencesStore(new(DateTimeOffset.UtcNow, [], [], [], null, null, true)),
+            activation,
+            new FakeStartup(),
+            new FakeLaunchTime(null),
+            TimeProvider.System);
+        var item = new MonitorItemViewModel(new MonitorItem("thread", "turn", "Task", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Running));
+
+        await viewModel.OpenAsync(item, CancellationToken.None);
+
+        Assert.Equal("暂时无法完成此操作，请重试", viewModel.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task AsyncCommand_FailureReportsSafeErrorWithoutEscapingAsyncVoid()
+    {
+        var reported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var command = new AsyncCommand(
+            () => Task.FromException(new InvalidOperationException("secret detail")),
+            onError: () => reported.TrySetResult());
+
+        command.Execute(null);
+
+        await reported.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task Refresh_NewGenerationBeforeBaselineCommit_PersistsOnlyNewBaseline()
+    {
+        var firstAdoption = new TaskCompletionSource<IReadOnlySet<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new FakeTaskMonitor(Set(), []) { FirstAdoption = firstAdoption, NextAdoption = Set("new-turn") };
+        var preferences = new FakePreferencesStore(MonitorPreferences.Empty);
+        Task? newerRefresh = null;
+        MonitorViewModel? viewModel = null;
+        var hook = new CommitHook(point =>
+        {
+            if (point == RefreshCommitPoint.Baseline)
+                newerRefresh ??= viewModel!.RefreshAsync(CancellationToken.None);
+        });
+        viewModel = Create(monitor, preferences, commitHook: hook);
+
+        var oldRefresh = viewModel.RefreshAsync(CancellationToken.None);
+        await monitor.FirstAdoptionStarted.Task;
+        firstAdoption.TrySetResult(Set("old-turn"));
+        await oldRefresh;
+        await newerRefresh!;
+
+        Assert.Contains("new-turn", preferences.Value.AdoptedTurnIds);
+        Assert.DoesNotContain("old-turn", preferences.Value.AdoptedTurnIds);
+    }
+
+    [Fact]
+    public async Task Refresh_NewGenerationBeforeItemCommit_DoesNotPublishStaleItems()
+    {
+        var initial = new MonitorItem("thread", "initial", "Initial", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Running);
+        var latest = new MonitorItem("thread", "latest", "Latest", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Waiting);
+        var firstScan = new TaskCompletionSource<MonitorScanResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new FakeTaskMonitor(Set(), []) { FirstScan = firstScan, NextScanResult = new MonitorScanResult([latest], 0) };
+        var preferences = new FakePreferencesStore(new(DateTimeOffset.UtcNow, [], [], [], null, null, true));
+        Task? newerRefresh = null;
+        MonitorViewModel? viewModel = null;
+        var hook = new CommitHook(point =>
+        {
+            if (point == RefreshCommitPoint.Items)
+                newerRefresh ??= viewModel!.RefreshAsync(CancellationToken.None);
+        });
+        viewModel = Create(monitor, preferences, commitHook: hook);
+
+        var oldRefresh = viewModel.RefreshAsync(CancellationToken.None);
+        await monitor.FirstScanStarted.Task;
+        firstScan.TrySetResult(new MonitorScanResult([initial], 0));
+        await oldRefresh;
+        await newerRefresh!;
+
+        Assert.Collection(viewModel.Items, item => Assert.Equal(latest.Id, item.Id));
+        Assert.Null(viewModel.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Refresh_NewGenerationBeforeErrorCommit_DoesNotPublishStaleError()
+    {
+        var firstScan = new TaskCompletionSource<MonitorScanResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new FakeTaskMonitor(Set(), []) { FirstScan = firstScan };
+        var preferences = new FakePreferencesStore(new(DateTimeOffset.UtcNow, [], [], [], null, null, true));
+        Task? newerRefresh = null;
+        MonitorViewModel? viewModel = null;
+        var hook = new CommitHook(point =>
+        {
+            if (point == RefreshCommitPoint.Error)
+                newerRefresh ??= viewModel!.RefreshAsync(CancellationToken.None);
+        });
+        viewModel = Create(monitor, preferences, commitHook: hook);
+
+        var oldRefresh = viewModel.RefreshAsync(CancellationToken.None);
+        await monitor.FirstScanStarted.Task;
+        firstScan.TrySetException(new CodexDataException(CodexDataError.DatabaseMissing, "missing"));
+        await oldRefresh;
+        await newerRefresh!;
+
+        Assert.Null(viewModel.ErrorMessage);
+        Assert.Equal(TimeSpan.FromSeconds(2), viewModel.NextPollDelay);
+    }
+
+    [Fact]
     public void ItemProjection_UsesAccessibleChineseStateAndDismissCapability()
     {
         var running = new MonitorItemViewModel(new MonitorItem("thread", "running", "Task", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Running));
@@ -119,8 +241,9 @@ public sealed class MonitorViewModelTests
         ITaskMonitor monitor,
         IMonitorPreferencesStore preferences,
         IStartupRegistration? startup = null,
-        DateTimeOffset? launchTime = null) =>
-        new(monitor, preferences, new FakeActivation(), startup ?? new FakeStartup(), new FakeLaunchTime(launchTime), TimeProvider.System);
+        DateTimeOffset? launchTime = null,
+        IMonitorViewModelCommitHook? commitHook = null) =>
+        new(monitor, preferences, new FakeActivation(), startup ?? new FakeStartup(), new FakeLaunchTime(launchTime), TimeProvider.System, commitHook);
 
     private static IReadOnlySet<string> Set(params string[] values) =>
         new HashSet<string>(values, StringComparer.Ordinal);
@@ -133,14 +256,31 @@ public sealed class MonitorViewModelTests
 
         public TaskCompletionSource<MonitorScanResult>? FirstScan { get; set; }
 
+        public bool FirstScanHonorsCancellation { get; init; }
+
+        public TaskCompletionSource<IReadOnlySet<string>>? FirstAdoption { get; set; }
+
+        public IReadOnlySet<string>? NextAdoption { get; init; }
+
+        public TaskCompletionSource<bool> FirstAdoptionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource<bool> FirstScanStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public TaskCompletionSource<bool> FirstScanCancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public MonitorScanResult? NextScanResult { get; set; }
 
-        public Task<IReadOnlySet<string>> CurrentlyRunningTurnIdsAsync(DateTimeOffset since, CancellationToken token) =>
-            Task.FromResult(adopted);
+        public async Task<IReadOnlySet<string>> CurrentlyRunningTurnIdsAsync(DateTimeOffset since, CancellationToken token)
+        {
+            if (FirstAdoption is { } firstAdoption)
+            {
+                FirstAdoption = null;
+                FirstAdoptionStarted.TrySetResult(true);
+                return await firstAdoption.Task;
+            }
+
+            return NextAdoption ?? adopted;
+        }
 
         public async Task<MonitorScanResult> ScanAsync(MonitorScanOptions options, CancellationToken token)
         {
@@ -149,7 +289,9 @@ public sealed class MonitorViewModelTests
                 FirstScan = null;
                 FirstScanStarted.TrySetResult(true);
                 using var registration = token.Register(() => FirstScanCancelled.TrySetResult(true));
-                return await firstScan.Task;
+                return FirstScanHonorsCancellation
+                    ? await firstScan.Task.WaitAsync(token)
+                    : await firstScan.Task;
             }
 
             if (ScanException is not null)
@@ -174,7 +316,10 @@ public sealed class MonitorViewModelTests
 
     private sealed class FakeActivation : IThreadActivationService
     {
-        public Task<string?> ActivateAsync(MonitorItem item, CancellationToken token) => Task.FromResult<string?>(null);
+        public Exception? Exception { get; init; }
+
+        public Task<string?> ActivateAsync(MonitorItem item, CancellationToken token) =>
+            Exception is null ? Task.FromResult<string?>(null) : Task.FromException<string?>(Exception);
     }
 
     private sealed class FakeStartup(bool enabled = false) : IStartupRegistration
@@ -187,5 +332,10 @@ public sealed class MonitorViewModelTests
     private sealed class FakeLaunchTime(DateTimeOffset? value) : ICodexLaunchTimeProvider
     {
         public DateTimeOffset? GetLaunchTime() => value;
+    }
+
+    private sealed class CommitHook(Action<RefreshCommitPoint> action) : IMonitorViewModelCommitHook
+    {
+        public void BeforeCommit(RefreshCommitPoint point) => action(point);
     }
 }

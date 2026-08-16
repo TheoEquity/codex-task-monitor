@@ -65,18 +65,44 @@ public partial class MainWindow : Window
         catch (OperationCanceledException)
         {
         }
+        catch
+        {
+            model.ReportActionFailure();
+        }
     }
 
     private async void Open_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: MonitorItemViewModel item } && DataContext is MonitorViewModel model)
-            await model.OpenAsync(item, CancellationToken.None);
+        try
+        {
+            if (sender is Button { Tag: MonitorItemViewModel item } && DataContext is MonitorViewModel model)
+                await model.OpenAsync(item, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            if (DataContext is MonitorViewModel model)
+                model.ReportActionFailure();
+        }
     }
 
     private async void Dismiss_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is Button { Tag: MonitorItemViewModel item } && DataContext is MonitorViewModel model)
-            await model.DismissAsync(item, CancellationToken.None);
+        try
+        {
+            if (sender is Button { Tag: MonitorItemViewModel item } && DataContext is MonitorViewModel model)
+                await model.DismissAsync(item, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            if (DataContext is MonitorViewModel model)
+                model.ReportActionFailure();
+        }
     }
 
     private void More_Click(object sender, RoutedEventArgs e)

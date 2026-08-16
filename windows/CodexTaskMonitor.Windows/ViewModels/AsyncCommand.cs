@@ -2,7 +2,7 @@ using System.Windows.Input;
 
 namespace CodexTaskMonitor.Windows.ViewModels;
 
-public sealed class AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null) : ICommand
+public sealed class AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null, Action? onError = null) : ICommand
 {
     private bool running;
 
@@ -17,9 +17,12 @@ public sealed class AsyncCommand(Func<Task> execute, Func<bool>? canExecute = nu
 
         running = true;
         CanExecuteChanged?.Invoke(this, EventArgs.Empty);
-        try
+        try { await execute(); }
+        catch (OperationCanceledException) { }
+        catch
         {
-            await execute();
+            try { onError?.Invoke(); }
+            catch { }
         }
         finally
         {

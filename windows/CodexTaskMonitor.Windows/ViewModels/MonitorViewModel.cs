@@ -8,27 +8,18 @@ using CodexTaskMonitor.Core.Preferences;
 
 namespace CodexTaskMonitor.Windows.ViewModels;
 
-public interface IThreadActivationService
-{
-    Task<string?> ActivateAsync(MonitorItem item, CancellationToken token);
-}
+public interface IThreadActivationService { Task<string?> ActivateAsync(MonitorItem item, CancellationToken token); }
+public interface IStartupRegistration { bool IsEnabled { get; } void SetEnabled(bool enabled); }
+public interface ICodexLaunchTimeProvider { DateTimeOffset? GetLaunchTime(); }
 
-public interface IStartupRegistration
-{
-    bool IsEnabled { get; }
-
-    void SetEnabled(bool enabled);
-}
-
-public interface ICodexLaunchTimeProvider
-{
-    DateTimeOffset? GetLaunchTime();
-}
+internal enum RefreshCommitPoint { Baseline, Items, Error }
+internal interface IMonitorViewModelCommitHook { void BeforeCommit(RefreshCommitPoint point); }
 
 public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
 {
     private static readonly TimeSpan NormalPollDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MissingDatabasePollDelay = TimeSpan.FromSeconds(10);
+    private const string ActionFailureMessage = "暂时无法完成此操作，请重试";
 
     private readonly ITaskMonitor monitor;
     private readonly IMonitorPreferencesStore preferenceStore;
@@ -36,15 +27,21 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly IStartupRegistration startup;
     private readonly ICodexLaunchTimeProvider launchTime;
     private readonly TimeProvider time;
+    private readonly IMonitorViewModelCommitHook? commitHook;
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly object refreshSync = new();
+    private readonly object preferenceSync = new();
     private readonly DateTimeOffset firstAttemptBaseline;
+    private readonly HashSet<Task> activeRefreshes = [];
     private MonitorPreferences preferences = MonitorPreferences.Empty;
     private CancellationTokenSource? activeRefresh;
-    private string? errorMessage;
+    private Task preferenceWrites = Task.CompletedTask;
     private Task? polling;
+    private Task? disposal;
+    private string? errorMessage;
     private long refreshGeneration;
+    private bool disposing;
     private TimeSpan nextPollDelay = NormalPollDelay;
 
     public MonitorViewModel(
@@ -54,6 +51,18 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         IStartupRegistration startup,
         ICodexLaunchTimeProvider launchTime,
         TimeProvider time)
+        : this(monitor, preferenceStore, activation, startup, launchTime, time, null)
+    {
+    }
+
+    internal MonitorViewModel(
+        ITaskMonitor monitor,
+        IMonitorPreferencesStore preferenceStore,
+        IThreadActivationService activation,
+        IStartupRegistration startup,
+        ICodexLaunchTimeProvider launchTime,
+        TimeProvider time,
+        IMonitorViewModelCommitHook? commitHook)
     {
         this.monitor = monitor;
         this.preferenceStore = preferenceStore;
@@ -61,55 +70,26 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         this.startup = startup;
         this.launchTime = launchTime;
         this.time = time;
+        this.commitHook = commitHook;
         firstAttemptBaseline = DateTimeOffset.FromUnixTimeSeconds(time.GetUtcNow().ToUnixTimeSeconds());
-        RefreshCommand = new AsyncCommand(() => RefreshAsync(lifetime.Token));
-        ToggleStartupCommand = new AsyncCommand(() => ToggleStartupAsync(lifetime.Token));
-        QuitCommand = new AsyncCommand(() =>
-        {
-            QuitRequested?.Invoke(this, EventArgs.Empty);
-            return Task.CompletedTask;
-        });
+        RefreshCommand = new AsyncCommand(() => RefreshAsync(lifetime.Token), onError: ReportActionFailure);
+        ToggleStartupCommand = new AsyncCommand(() => ToggleStartupAsync(lifetime.Token), onError: ReportActionFailure);
+        QuitCommand = new AsyncCommand(() => { QuitRequested?.Invoke(this, EventArgs.Empty); return Task.CompletedTask; }, onError: ReportActionFailure);
     }
 
     public ObservableCollection<MonitorItemViewModel> Items { get; } = [];
-
-    public string? ErrorMessage
-    {
-        get => errorMessage;
-        private set
-        {
-            if (errorMessage == value)
-                return;
-
-            errorMessage = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(HasError));
-            OnPropertyChanged(nameof(PanelHeight));
-        }
-    }
-
+    public string? ErrorMessage { get => errorMessage; private set => SetErrorMessage(value); }
     public bool HasError => ErrorMessage is not null;
-
     public double PanelHeight => MonitorPanelLayout.Height(Items.Count, HasError);
-
     public double? SavedWindowLeft => preferences.WindowLeft;
-
     public double? SavedWindowTop => preferences.WindowTop;
-
     public bool IsStartupEnabled => preferences.LaunchAtLoginEnabled ?? startup.IsEnabled;
-
     internal TimeSpan NextPollDelay => nextPollDelay;
-
     public AsyncCommand RefreshCommand { get; }
-
     public AsyncCommand ToggleStartupCommand { get; }
-
     public AsyncCommand QuitCommand { get; }
-
     public event EventHandler? QuitRequested;
-
     public event EventHandler<string>? ItemInserted;
-
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public async Task StartAsync(bool startPollingLoop, CancellationToken token)
@@ -120,7 +100,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (preferences.LaunchAtLoginEnabled is null)
         {
             preferences = preferences.WithLaunchAtLogin(launchAtLogin);
-            await preferenceStore.SaveAsync(preferences, token);
+            await SavePreferencesAsync(preferences, token);
         }
 
         OnPropertyChanged(nameof(IsStartupEnabled));
@@ -136,126 +116,217 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         var enabled = !IsStartupEnabled;
         startup.SetEnabled(enabled);
         preferences = preferences.WithLaunchAtLogin(enabled);
-        await preferenceStore.SaveAsync(preferences, token);
+        await SavePreferencesAsync(preferences, token);
         OnPropertyChanged(nameof(IsStartupEnabled));
     }
 
-    public async Task OpenAsync(MonitorItemViewModel item, CancellationToken token) =>
-        ErrorMessage = await activation.ActivateAsync(item.Item, token);
+    public async Task OpenAsync(MonitorItemViewModel item, CancellationToken token)
+    {
+        try { ErrorMessage = await activation.ActivateAsync(item.Item, token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { ReportActionFailure(); }
+    }
 
     public async Task DismissAsync(MonitorItemViewModel item, CancellationToken token)
     {
         if (!item.CanDismiss)
             return;
 
-        preferences = preferences.Dismiss(item.Id);
-        await preferenceStore.SaveAsync(preferences, token);
-        await RefreshAsync(token);
+        try
+        {
+            preferences = preferences.Dismiss(item.Id);
+            await SavePreferencesAsync(preferences, token);
+            await RefreshAsync(token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { ReportActionFailure(); }
     }
 
     public async Task SaveWindowPositionAsync(double left, double top, CancellationToken token)
     {
-        preferences = preferences.WithWindowPosition(left, top);
-        await preferenceStore.SaveAsync(preferences, token);
-        OnPropertyChanged(nameof(SavedWindowLeft));
-        OnPropertyChanged(nameof(SavedWindowTop));
+        try
+        {
+            preferences = preferences.WithWindowPosition(left, top);
+            await SavePreferencesAsync(preferences, token);
+            OnPropertyChanged(nameof(SavedWindowLeft));
+            OnPropertyChanged(nameof(SavedWindowTop));
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { ReportActionFailure(); }
     }
 
-    public async Task RefreshAsync(CancellationToken token)
+    public Task RefreshAsync(CancellationToken token)
     {
-        var refresh = BeginRefresh(token);
+        RefreshScope refresh;
+        TaskCompletionSource completion;
+        lock (refreshSync)
+        {
+            if (disposing)
+                return Task.FromCanceled(new CancellationToken(canceled: true));
+
+            activeRefresh?.Cancel();
+            activeRefresh = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, token);
+            refresh = new RefreshScope(++refreshGeneration, activeRefresh);
+            completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            activeRefreshes.Add(completion.Task);
+        }
+
+        _ = RunRefreshAsync(refresh, token, completion);
+        return completion.Task;
+    }
+
+    public void ReportActionFailure() => ErrorMessage = ActionFailureMessage;
+
+    private async Task RunRefreshAsync(RefreshScope refresh, CancellationToken callerToken, TaskCompletionSource completion)
+    {
+        var enteredGate = false;
+        Exception? failure = null;
         try
         {
             await refreshGate.WaitAsync(refresh.Token);
-            try
-            {
-                await RefreshCurrentGenerationAsync(refresh.Generation, refresh.Token);
-            }
-            finally
-            {
-                refreshGate.Release();
-            }
+            enteredGate = true;
+            await RefreshCoreAsync(refresh, refresh.Token);
         }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested && !lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested && !lifetime.IsCancellationRequested)
         {
-            // A newer refresh superseded this generation; it owns any UI updates.
+        }
+        catch (Exception error)
+        {
+            failure = error;
         }
         finally
         {
-            EndRefresh(refresh);
+            if (enteredGate)
+                refreshGate.Release();
+            EndRefresh(refresh, completion.Task);
+            if (failure is null)
+                completion.TrySetResult();
+            else
+                completion.TrySetException(failure);
         }
     }
 
-    private async Task RefreshCoreAsync(long generation, CancellationToken token)
+    private async Task RefreshCoreAsync(RefreshScope refresh, CancellationToken token)
     {
-        if (preferences.Baseline is null)
+        try
         {
-            var hourAgo = firstAttemptBaseline.AddHours(-1);
-            var activeSince = launchTime.GetLaunchTime() is { } launched && launched > hourAgo ? launched : hourAgo;
-            var adopted = await monitor.CurrentlyRunningTurnIdsAsync(activeSince, token);
-            if (!IsCurrentGeneration(generation))
-                return;
+            if (preferences.Baseline is null)
+            {
+                var hourAgo = firstAttemptBaseline.AddHours(-1);
+                var activeSince = launchTime.GetLaunchTime() is { } launched && launched > hourAgo ? launched : hourAgo;
+                var adopted = await monitor.CurrentlyRunningTurnIdsAsync(activeSince, token);
+                MonitorPreferences? baselineSnapshot = null;
+                if (!TryCommit(refresh, RefreshCommitPoint.Baseline, () =>
+                {
+                    preferences = preferences.Initialize(firstAttemptBaseline, adopted);
+                    baselineSnapshot = preferences;
+                }))
+                    return;
 
-            preferences = preferences.Initialize(firstAttemptBaseline, adopted);
-            await preferenceStore.SaveAsync(preferences, token);
+                await SavePreferencesAsync(baselineSnapshot!, token);
+            }
+
+            var scanOptions = new MonitorScanOptions(
+                preferences.Baseline!.Value,
+                preferences.AdoptedTurnIds,
+                preferences.DismissedTurnIds,
+                preferences.DismissedItemIds);
+            var result = await monitor.ScanAsync(scanOptions, token);
+            string? insertedId = null;
+            var applied = TryCommit(refresh, RefreshCommitPoint.Items, () =>
+            {
+                insertedId = UpdateItems(result.Items);
+                nextPollDelay = NormalPollDelay;
+                ErrorMessage = result.UnreadableRolloutCount == 0 ? null : $"{result.UnreadableRolloutCount} 个任务暂时无法读取";
+            });
+            if (applied && insertedId is not null)
+                ItemInserted?.Invoke(this, insertedId);
         }
-
-        var scanOptions = new MonitorScanOptions(
-            preferences.Baseline!.Value,
-            preferences.AdoptedTurnIds,
-            preferences.DismissedTurnIds,
-            preferences.DismissedItemIds);
-        var result = await monitor.ScanAsync(scanOptions, token);
-        if (!IsCurrentGeneration(generation))
-            return;
-
-        UpdateItems(result.Items);
-        nextPollDelay = NormalPollDelay;
-        ErrorMessage = result.UnreadableRolloutCount == 0
-            ? null
-            : $"{result.UnreadableRolloutCount} 个任务暂时无法读取";
-        OnPropertyChanged(nameof(PanelHeight));
+        catch (OperationCanceledException) { throw; }
+        catch (Exception error)
+        {
+            TryCommit(refresh, RefreshCommitPoint.Error, () =>
+            {
+                nextPollDelay = error is CodexDataException { Error: CodexDataError.DatabaseMissing }
+                    ? MissingDatabasePollDelay
+                    : NormalPollDelay;
+                ErrorMessage = UserMessage(error);
+            });
+        }
     }
 
-    private void UpdateItems(IReadOnlyList<MonitorItem> items)
+    private bool TryCommit(RefreshScope refresh, RefreshCommitPoint point, Action commit)
+    {
+        commitHook?.BeforeCommit(point);
+        lock (refreshSync)
+        {
+            if (disposing || refresh.Generation != refreshGeneration)
+                return false;
+
+            commit();
+            return true;
+        }
+    }
+
+    private string? UpdateItems(IReadOnlyList<MonitorItem> items)
     {
         var oldIds = Items.Select(item => item.Id).ToArray();
         var nextItems = items.Select(item => new MonitorItemViewModel(item)).ToArray();
         var insertedId = MonitorListUpdate.InsertedId(oldIds, nextItems.Select(item => item.Id).ToArray());
         if (Items.SequenceEqual(nextItems))
-            return;
+            return null;
 
         Items.Clear();
         foreach (var item in nextItems)
             Items.Add(item);
-
-        if (insertedId is not null)
-            ItemInserted?.Invoke(this, insertedId);
         OnPropertyChanged(nameof(PanelHeight));
+        return insertedId;
     }
 
-    private RefreshScope BeginRefresh(CancellationToken token)
+    private Task SavePreferencesAsync(MonitorPreferences snapshot, CancellationToken token)
     {
-        lock (refreshSync)
+        Task previous;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (preferenceSync)
         {
-            activeRefresh?.Cancel();
-            activeRefresh = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, token);
-            return new RefreshScope(++refreshGeneration, activeRefresh);
+            previous = preferenceWrites;
+            preferenceWrites = completion.Task;
+        }
+
+        _ = SaveAfterAsync(previous, snapshot, token, completion);
+        return completion.Task;
+    }
+
+    private async Task SaveAfterAsync(
+        Task previous,
+        MonitorPreferences snapshot,
+        CancellationToken token,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            try { await previous; }
+            catch { }
+            await preferenceStore.SaveAsync(snapshot, token);
+            completion.TrySetResult();
+        }
+        catch (Exception error)
+        {
+            completion.TrySetException(error);
         }
     }
 
-    private void EndRefresh(RefreshScope refresh)
+    private void EndRefresh(RefreshScope refresh, Task completion)
     {
         lock (refreshSync)
         {
             if (ReferenceEquals(activeRefresh, refresh.Source))
                 activeRefresh = null;
+            activeRefreshes.Remove(completion);
         }
 
         refresh.Source.Dispose();
     }
-
-    private bool IsCurrentGeneration(long generation) => Volatile.Read(ref refreshGeneration) == generation;
 
     private async Task PollAsync(CancellationToken token)
     {
@@ -272,6 +343,17 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+    private void SetErrorMessage(string? value)
+    {
+        if (errorMessage == value)
+            return;
+
+        errorMessage = value;
+        OnPropertyChanged(nameof(ErrorMessage));
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(PanelHeight));
+    }
+
     private static string UserMessage(Exception error) => error switch
     {
         CodexDataException { Error: CodexDataError.DatabaseMissing } => "未找到本机 Codex 数据",
@@ -279,44 +361,65 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         _ => "暂时无法读取 Codex 数据"
     };
 
-    private async Task RefreshCurrentGenerationAsync(long generation, CancellationToken token)
-    {
-        try
-        {
-            await RefreshCoreAsync(generation, token);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception error)
-        {
-            if (!IsCurrentGeneration(generation))
-                return;
-
-            nextPollDelay = error is CodexDataException { Error: CodexDataError.DatabaseMissing }
-                ? MissingDatabasePollDelay
-                : NormalPollDelay;
-            ErrorMessage = UserMessage(error);
-        }
-    }
-
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        lifetime.Cancel();
+        Task? poll;
+        IReadOnlyCollection<Task> refreshes;
+        TaskCompletionSource completion;
         lock (refreshSync)
         {
+            if (disposal is not null)
+                return new ValueTask(disposal);
+
+            disposing = true;
+            lifetime.Cancel();
             activeRefresh?.Cancel();
+            poll = polling;
+            refreshes = activeRefreshes.ToArray();
+            completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            disposal = completion.Task;
         }
 
-        if (polling is not null)
-            await polling;
+        Task pendingWrites;
+        lock (preferenceSync)
+        {
+            pendingWrites = preferenceWrites;
+        }
 
-        lifetime.Dispose();
-        refreshGate.Dispose();
+        _ = DisposeCoreAsync(poll, refreshes, pendingWrites, completion);
+        return new ValueTask(disposal);
+    }
+
+    private async Task DisposeCoreAsync(
+        Task? poll,
+        IReadOnlyCollection<Task> refreshes,
+        Task pendingWrites,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            await AwaitWithoutFailureAsync(poll);
+            await AwaitWithoutFailureAsync(Task.WhenAll(refreshes));
+            await AwaitWithoutFailureAsync(pendingWrites);
+            lifetime.Dispose();
+            refreshGate.Dispose();
+            completion.TrySetResult();
+        }
+        catch (Exception error)
+        {
+            completion.TrySetException(error);
+        }
+    }
+
+    private static async Task AwaitWithoutFailureAsync(Task? task)
+    {
+        if (task is null)
+            return;
+        try { await task; }
+        catch { }
     }
 
     private sealed record RefreshScope(long Generation, CancellationTokenSource Source)
