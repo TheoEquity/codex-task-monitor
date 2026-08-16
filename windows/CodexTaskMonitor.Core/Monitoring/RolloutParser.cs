@@ -142,7 +142,7 @@ public static class RolloutParser
                 DateTimeOffset.FromUnixTimeMilliseconds((long)(completed * 1000)));
             return current is null || current.TurnId == turnId ? terminal : current;
         }
-        catch (JsonException) when (!Markers.Any(line.Contains))
+        catch (JsonException) when (!ContainsLifecycleMarker(line))
         {
             return current;
         }
@@ -154,4 +154,64 @@ public static class RolloutParser
 
     private static CodexDataException FormatChanged(Exception error) =>
         new(CodexDataError.FormatChanged, "Codex rollout format changed", error);
+
+    private static bool ContainsLifecycleMarker(string line) =>
+        line.Contains("\"event_msg\"", StringComparison.Ordinal) &&
+        Markers.Any(marker => ContainsJsonEscapedAscii(line, marker));
+
+    private static bool ContainsJsonEscapedAscii(string text, string marker)
+    {
+        for (var start = 0; start < text.Length; start++)
+        {
+            var index = start;
+            var markerIndex = 0;
+            while (markerIndex < marker.Length && index < text.Length)
+            {
+                if (text[index] == marker[markerIndex])
+                {
+                    index++;
+                    markerIndex++;
+                    continue;
+                }
+
+                if (text[index] != '\\' ||
+                    index + 5 >= text.Length ||
+                    text[index + 1] != 'u' ||
+                    !TryReadHex(text.AsSpan(index + 2, 4), out var value) ||
+                    value != marker[markerIndex])
+                    break;
+
+                index += 6;
+                markerIndex++;
+            }
+
+            if (markerIndex == marker.Length)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadHex(ReadOnlySpan<char> text, out char value)
+    {
+        value = default;
+        var number = 0;
+        foreach (var character in text)
+        {
+            var digit = character switch
+            {
+                >= '0' and <= '9' => character - '0',
+                >= 'a' and <= 'f' => character - 'a' + 10,
+                >= 'A' and <= 'F' => character - 'A' + 10,
+                _ => -1
+            };
+            if (digit < 0)
+                return false;
+
+            number = (number * 16) + digit;
+        }
+
+        value = (char)number;
+        return true;
+    }
 }
