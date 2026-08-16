@@ -53,11 +53,15 @@ public sealed class UiAutomationSidebarScrollInput
                 if (!candidate.Element.TryGetCurrentPattern(ScrollPattern.Pattern, out var value) ||
                     value is not ScrollPattern pattern || !pattern.Current.VerticallyScrollable)
                     continue;
-                if (!permit.TryAuthorize())
+                var didScroll = false;
+                if (!permit.TryExecute(() =>
+                    {
+                        pattern.Scroll(ScrollAmount.NoAmount,
+                            direction == ScrollDirection.Up ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement);
+                        didScroll = true;
+                    }))
                     return false;
-                pattern.Scroll(ScrollAmount.NoAmount,
-                    direction == ScrollDirection.Up ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement);
-                return true;
+                return didScroll;
             }
 
             return false;

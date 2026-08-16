@@ -303,13 +303,33 @@ public sealed class SidebarScrollControllerTests
     }
 
     [Fact]
-    public void Permit_AuthorizesOnlyItsFirstEffectBeforeDeadline()
+    public void Permit_ExecutesOnlyItsFirstEffectBeforeDeadline()
     {
         var authorization = new ScrollEffectAuthorization(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(1), default);
         var permit = authorization.CreatePermit();
+        var effects = 0;
 
-        Assert.True(permit.TryAuthorize());
-        Assert.False(permit.TryAuthorize());
+        Assert.True(permit.TryExecute(() => effects++));
+        Assert.False(permit.TryExecute(() => effects++));
+        Assert.Equal(1, effects);
+    }
+
+    [Fact]
+    public void Permit_DoesNotExposeBooleanAuthorizationAndSkipsExpiredOrCancelledEffects()
+    {
+        Assert.Null(typeof(IScrollEffectPermit).GetMethod("TryAuthorize"));
+        Assert.NotNull(typeof(IScrollEffectPermit).GetMethod("TryExecute"));
+
+        var expired = new ScrollEffectAuthorization(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(1), default);
+        expired.Expire();
+        var effects = 0;
+        Assert.False(expired.CreatePermit().TryExecute(() => effects++));
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var cancelled = new ScrollEffectAuthorization(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(1), cancellation.Token);
+        Assert.False(cancelled.CreatePermit().TryExecute(() => effects++));
+        Assert.Equal(0, effects);
     }
 
     private static AutomationSnapshot Page(string key, string? targetTitle = null, bool targetOffscreen = false)
@@ -394,8 +414,7 @@ public sealed class SidebarScrollControllerTests
         public Task<bool> ScrollAsync(nint windowHandle, SidebarScrollRegion region, ScrollDirection direction, SidebarInputMode mode, IScrollEffectPermit permit, CancellationToken token)
         {
             Release.Wait();
-            if (permit.TryAuthorize())
-                EffectCount++;
+            _ = permit.TryExecute(() => EffectCount++);
             Finished.Set();
             return Task.FromResult(EffectCount > 0);
         }

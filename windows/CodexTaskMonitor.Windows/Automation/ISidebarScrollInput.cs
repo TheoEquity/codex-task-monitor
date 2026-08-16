@@ -40,33 +40,48 @@ internal interface ISidebarScrollInput
 
 internal interface IScrollEffectPermit
 {
-    bool TryAuthorize();
+    bool TryExecute(Action effect);
 }
 
 internal sealed class ScrollEffectAuthorization(TimeProvider time, long started, TimeSpan timeout, CancellationToken token)
 {
-    private int expired;
+    private const int Pending = 0;
+    private const int Executing = 1;
+    private const int Expired = 2;
+    private int state;
 
     public IScrollEffectPermit CreatePermit() => new Permit(this);
 
-    public void Expire() => Interlocked.Exchange(ref expired, 1);
+    public void Expire() => Interlocked.Exchange(ref state, Expired);
 
-    private bool TryAuthorize()
+    private bool TryExecute(Action effect)
     {
+        ArgumentNullException.ThrowIfNull(effect);
         if (token.IsCancellationRequested || time.GetElapsedTime(started) >= timeout)
         {
             Expire();
             return false;
         }
 
-        return Volatile.Read(ref expired) == 0;
+        if (Interlocked.CompareExchange(ref state, Executing, Pending) != Pending)
+            return false;
+
+        try
+        {
+            effect();
+            return true;
+        }
+        finally
+        {
+            _ = Interlocked.CompareExchange(ref state, Pending, Executing);
+        }
     }
 
     private sealed class Permit(ScrollEffectAuthorization owner) : IScrollEffectPermit
     {
         private int used;
 
-        public bool TryAuthorize() =>
-            Interlocked.CompareExchange(ref used, 1, 0) == 0 && owner.TryAuthorize();
+        public bool TryExecute(Action effect) =>
+            Interlocked.CompareExchange(ref used, 1, 0) == 0 && owner.TryExecute(effect);
     }
 }

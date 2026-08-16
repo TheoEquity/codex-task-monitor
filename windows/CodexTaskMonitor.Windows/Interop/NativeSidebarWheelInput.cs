@@ -29,8 +29,13 @@ public sealed class NativeSidebarWheelInput
         };
     }
 
-    private bool ScrollPosted(nint handle, SidebarScrollRegion region, int delta, IScrollEffectPermit permit) =>
-        TryValidatePoint(handle, region, out var hitTestWindow) && permit.TryAuthorize() && api.PostWheel(hitTestWindow, region.InputPoint, delta);
+    private bool ScrollPosted(nint handle, SidebarScrollRegion region, int delta, IScrollEffectPermit permit)
+    {
+        if (!TryValidatePoint(handle, region, out var hitTestWindow))
+            return false;
+        var posted = false;
+        return permit.TryExecute(() => posted = api.PostWheel(hitTestWindow, region.InputPoint, delta)) && posted;
+    }
 
     private bool ScrollPhysical(nint handle, SidebarScrollRegion region, int delta, IScrollEffectPermit permit, CancellationToken token)
     {
@@ -48,9 +53,8 @@ public sealed class NativeSidebarWheelInput
             if (api.GetForegroundWindow() != handle || !TryValidatePoint(handle, region, out _))
                 return false;
             token.ThrowIfCancellationRequested();
-            if (!permit.TryAuthorize())
-                return false;
-            return api.SendWheel(delta);
+            var sent = false;
+            return permit.TryExecute(() => sent = api.SendWheel(delta)) && sent;
         }
         finally
         {
