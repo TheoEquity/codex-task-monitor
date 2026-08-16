@@ -16,15 +16,17 @@ public sealed class WindowsSidebarRevealer(
     string sessionIndexPath,
     string globalStatePath,
     IThreadGroupingLookup groupingLookup,
-    TimeProvider time) : IWindowsSidebarRevealer
+    TimeProvider time,
+    IUiAutomationRootReadinessProbe? rootReadiness = null) : IWindowsSidebarRevealer
 {
     private static readonly TimeSpan WindowReadinessTimeout = TimeSpan.FromSeconds(5);
+    private readonly IUiAutomationRootReadinessProbe rootReadiness = rootReadiness ?? new UiAutomationRootReadinessProbe();
 
     public async Task<string?> RevealAsync(MonitorItem item, CancellationToken token)
     {
         var deadline = time.GetTimestamp() +
             (long)(WindowReadinessTimeout.TotalSeconds * time.TimestampFrequency);
-        nint handle;
+        nint handle = 0;
         while (true)
         {
             token.ThrowIfCancellationRequested();
@@ -33,7 +35,7 @@ public sealed class WindowsSidebarRevealer(
                 return "已打开对话；暂时无法在侧栏定位";
 
             handle = windows.FindMainWindow();
-            if (handle != 0)
+            if (handle != 0 && await IsUiAutomationRootReadyAsync(handle, remainingTicks, token).ConfigureAwait(false))
                 break;
 
             var remaining = TimeSpan.FromSeconds((double)remainingTicks / time.TimestampFrequency);
@@ -70,6 +72,31 @@ public sealed class WindowsSidebarRevealer(
             SidebarScrollStatus.RegionUnavailable => "已打开对话；Codex 侧栏结构已变化",
             _ => "已打开对话；暂时无法在侧栏定位"
         };
+    }
+
+    private async Task<bool> IsUiAutomationRootReadyAsync(nint handle, long remainingTicks, CancellationToken token)
+    {
+        var remaining = TimeSpan.FromSeconds((double)remainingTicks / time.TimestampFrequency);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
+        try
+        {
+            var pending = Task.Run(async () =>
+            {
+                linked.Token.ThrowIfCancellationRequested();
+                await rootReadiness.ProbeAsync(handle, linked.Token).ConfigureAwait(false);
+            }, CancellationToken.None);
+            await pending.WaitAsync(remaining, time, token).ConfigureAwait(false);
+            return true;
+        }
+        catch (UiAutomationRootUnavailableException)
+        {
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            linked.Cancel();
+            return false;
+        }
     }
 
     private sealed record TargetResolution(bool GroupingFound, SidebarTarget? Target);
