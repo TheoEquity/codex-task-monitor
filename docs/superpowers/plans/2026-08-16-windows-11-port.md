@@ -118,7 +118,7 @@ Run in an ordinary PowerShell window:
 winget install --exact --id Microsoft.DotNet.SDK.8 --version 8.0.424 --source winget --accept-source-agreements --accept-package-agreements
 winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --accept-source-agreements --accept-package-agreements
 dotnet --version
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' /?
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' /?
 ```
 
 Expected: `dotnet --version` prints `8.0.424`; ISCC prints its command-line help and exits successfully.
@@ -4319,7 +4319,7 @@ Run:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path windows/artifacts | Out-Null
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
 Get-FileHash windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe -Algorithm SHA256
 ```
 
@@ -4374,7 +4374,7 @@ jobs:
         run: winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements
       - name: Build installer
         shell: pwsh
-        run: "& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss"
+        run: "& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss"
       - name: Hash artifacts
         shell: pwsh
         run: Get-FileHash windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe -Algorithm SHA256 | Format-List
@@ -4404,7 +4404,7 @@ Run:
 ```powershell
 dotnet test windows/CodexTaskMonitor.sln -c Release
 dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -o windows/publish/win-x64
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
 Test-Path -LiteralPath windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe
 ```
 
@@ -4527,7 +4527,7 @@ The Windows build is a separate .NET 8/WPF implementation under `windows/`. It r
 ```powershell
 dotnet test windows/CodexTaskMonitor.sln -c Release
 dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -o windows/publish/win-x64
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
 ```
 
 ### Privacy and compatibility
@@ -4546,7 +4546,7 @@ Run:
 ```powershell
 dotnet test windows/CodexTaskMonitor.sln -c Release --logger "console;verbosity=normal"
 dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -o windows/publish/win-x64
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
 powershell -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/verify_windows_environment.ps1
 git diff --check
 ```
@@ -4573,7 +4573,7 @@ Before declaring the Windows port complete, run from `D:\codex-task-monitor`:
 ```powershell
 dotnet test windows/CodexTaskMonitor.sln -c Release --logger "console;verbosity=normal"
 dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -o windows/publish/win-x64
-& 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
 powershell -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/verify_windows_environment.ps1
 git status --short
 ```

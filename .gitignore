@@ -3,3 +3,5 @@ work/
 outputs/*.app/
 .superpowers/
 .worktrees/
+windows/**/bin/
+windows/**/obj/

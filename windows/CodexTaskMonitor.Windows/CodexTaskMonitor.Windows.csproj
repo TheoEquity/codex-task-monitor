@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>CodexTaskMonitor</AssemblyName>
+    <RootNamespace>CodexTaskMonitor.Windows</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\CodexTaskMonitor.Core\CodexTaskMonitor.Core.csproj" /></ItemGroup>
+</Project>
