@@ -48,8 +48,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | AE802CAFF7DCBE940DB0C2038512486551DBAC97431A233C8781899A71DE565B |
-| Test commit SHA | 6b9d2b858e95b40c7be2e6a7e2496db28cfe0e33 |
+| Installer SHA-256 | BD9BBB01B0D4D7CC8C2D4B1BE607DE05FA06C5A862DC92DA0EFEEE7710604902 |
+| Test commit SHA | 7fdf00a3b11e1e8dbccfff8d64d1bff6b91a6279 |
 | Pass date | 2026-08-16 |
 
 ## Automated current-machine evidence
@@ -63,3 +63,5 @@ unchecked visual, click, Codex-interaction, reboot, or login acceptance item abo
 | Installed executable process start | Installed executable started after first install and final reinstall. |
 | HKCU Run value inspection | The fixed `CodexTaskMonitor` value was present after install, upgrade, and reinstall, and absent after uninstall. |
 | Installed files inspection | Installed executable existed after install, upgrade, and reinstall; the installation directory was absent after uninstall. |
+| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,250,647 bytes, unsigned, and was validated with its recorded SHA-256. |
+| Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist, and one monitor process is running. |
