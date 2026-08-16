@@ -194,6 +194,68 @@ public sealed class MonitorViewModelTests
     }
 
     [Fact]
+    public async Task Refresh_BlockedBaselineSaveThenToggle_RebasesOnTheCommittedBaseline()
+    {
+        var monitor = new FakeTaskMonitor(Set("adopted"), []);
+        var preferences = new CommitBlockingPreferencesStore(MonitorPreferences.Empty);
+        var startup = new FakeStartup(enabled: true);
+        var viewModel = Create(monitor, preferences, startup: startup);
+
+        var refresh = viewModel.RefreshAsync(CancellationToken.None);
+        await preferences.FirstSaveStarted.Task;
+        var toggle = viewModel.ToggleStartupAsync(CancellationToken.None);
+        preferences.ReleaseFirstSave.TrySetResult(true);
+        await Task.WhenAll(refresh, toggle);
+
+        Assert.NotNull(preferences.Value.Baseline);
+        Assert.Contains("adopted", preferences.Value.AdoptedTurnIds);
+        Assert.Equal(false, preferences.Value.LaunchAtLoginEnabled);
+        Assert.False(startup.IsEnabled);
+        Assert.Contains("adopted", monitor.LastScanOptions!.AdoptedTurnIds);
+    }
+
+    [Fact]
+    public async Task Refresh_BlockedBaselineSaveThenWindowPosition_RebasesOnTheCommittedBaseline()
+    {
+        var monitor = new FakeTaskMonitor(Set("adopted"), []);
+        var preferences = new CommitBlockingPreferencesStore(MonitorPreferences.Empty);
+        var viewModel = Create(monitor, preferences);
+
+        var refresh = viewModel.RefreshAsync(CancellationToken.None);
+        await preferences.FirstSaveStarted.Task;
+        var position = viewModel.SaveWindowPositionAsync(12, 34, CancellationToken.None);
+        preferences.ReleaseFirstSave.TrySetResult(true);
+        await Task.WhenAll(refresh, position);
+
+        Assert.NotNull(preferences.Value.Baseline);
+        Assert.Equal(12, preferences.Value.WindowLeft);
+        Assert.Equal(34, preferences.Value.WindowTop);
+        Assert.Equal(12, viewModel.SavedWindowLeft);
+        Assert.Equal(34, viewModel.SavedWindowTop);
+        Assert.Contains("adopted", monitor.LastScanOptions!.AdoptedTurnIds);
+    }
+
+    [Fact]
+    public async Task PreferenceMutations_DismissAndWindowPositionRemainCombinedAcrossQueuedSaves()
+    {
+        var item = new MonitorItem("thread", "turn", "Task", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Waiting);
+        var initial = new MonitorPreferences(DateTimeOffset.UtcNow, [], [], [], null, null, true);
+        var preferences = new CommitBlockingPreferencesStore(initial);
+        var viewModel = Create(new FakeTaskMonitor(Set(), [item]), preferences);
+        await viewModel.StartAsync(false, CancellationToken.None);
+
+        var position = viewModel.SaveWindowPositionAsync(12, 34, CancellationToken.None);
+        await preferences.FirstSaveStarted.Task;
+        var dismiss = viewModel.DismissAsync(viewModel.Items.Single(), CancellationToken.None);
+        preferences.ReleaseFirstSave.TrySetResult(true);
+        await Task.WhenAll(position, dismiss);
+
+        Assert.Contains("thread:turn", preferences.Value.DismissedItemIds);
+        Assert.Equal(12, preferences.Value.WindowLeft);
+        Assert.Equal(34, preferences.Value.WindowTop);
+    }
+
+    [Fact]
     public async Task Refresh_NewGenerationBeforeItemCommit_DoesNotPublishStaleItems()
     {
         var initial = new MonitorItem("thread", "initial", "Initial", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Running);
@@ -364,6 +426,31 @@ public sealed class MonitorViewModelTests
                 firstSave = false;
                 FirstSaveStarted.TrySetResult(true);
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+
+            Value = value;
+        }
+    }
+
+    private sealed class CommitBlockingPreferencesStore(MonitorPreferences initial) : IMonitorPreferencesStore
+    {
+        private bool firstSave = true;
+
+        public MonitorPreferences Value { get; private set; } = initial;
+
+        public TaskCompletionSource<bool> FirstSaveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<bool> ReleaseFirstSave { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<MonitorPreferences> LoadAsync(CancellationToken token) => Task.FromResult(Value);
+
+        public async Task SaveAsync(MonitorPreferences value, CancellationToken token)
+        {
+            if (firstSave)
+            {
+                firstSave = false;
+                FirstSaveStarted.TrySetResult(true);
+                await ReleaseFirstSave.Task;
             }
 
             Value = value;

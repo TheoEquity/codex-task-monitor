@@ -29,14 +29,14 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly TimeProvider time;
     private readonly IMonitorViewModelCommitHook? commitHook;
     private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private readonly SemaphoreSlim preferenceMutationGate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly object refreshSync = new();
-    private readonly object preferenceSync = new();
     private readonly DateTimeOffset firstAttemptBaseline;
     private readonly HashSet<Task> activeRefreshes = [];
     private MonitorPreferences preferences = MonitorPreferences.Empty;
+    private bool preferencesLoaded;
     private CancellationTokenSource? activeRefresh;
-    private Task preferenceWrites = Task.CompletedTask;
     private Task? polling;
     private Task? disposal;
     private string? actionErrorMessage;
@@ -95,14 +95,13 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async Task StartAsync(bool startPollingLoop, CancellationToken token)
     {
-        preferences = await preferenceStore.LoadAsync(token);
-        var launchAtLogin = preferences.LaunchAtLoginEnabled ?? startup.IsEnabled;
-        startup.SetEnabled(launchAtLogin);
-        if (preferences.LaunchAtLoginEnabled is null)
-        {
-            preferences = preferences.WithLaunchAtLogin(launchAtLogin);
-            await SavePreferencesAsync(preferences, token);
-        }
+        var initialStartupSetting = startup.IsEnabled;
+        await MutatePreferencesAsync(
+            current => current.LaunchAtLoginEnabled is null
+                ? current.WithLaunchAtLogin(initialStartupSetting)
+                : current,
+            token,
+            committed => startup.SetEnabled(committed.LaunchAtLoginEnabled ?? initialStartupSetting));
 
         OnPropertyChanged(nameof(IsStartupEnabled));
         OnPropertyChanged(nameof(SavedWindowLeft));
@@ -114,10 +113,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async Task ToggleStartupAsync(CancellationToken token)
     {
-        var enabled = !IsStartupEnabled;
-        startup.SetEnabled(enabled);
-        preferences = preferences.WithLaunchAtLogin(enabled);
-        await SavePreferencesAsync(preferences, token);
+        await MutatePreferencesAsync(
+            current => current.WithLaunchAtLogin(!(current.LaunchAtLoginEnabled ?? startup.IsEnabled)),
+            token,
+            committed => startup.SetEnabled(committed.LaunchAtLoginEnabled ?? startup.IsEnabled));
         OnPropertyChanged(nameof(IsStartupEnabled));
     }
 
@@ -136,8 +135,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
 
         try
         {
-            preferences = preferences.Dismiss(item.Id);
-            await SavePreferencesAsync(preferences, token);
+            await MutatePreferencesAsync(current => current.Dismiss(item.Id), token);
             await RefreshAsync(token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -148,8 +146,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         try
         {
-            preferences = preferences.WithWindowPosition(left, top);
-            await SavePreferencesAsync(preferences, token);
+            await MutatePreferencesAsync(current => current.WithWindowPosition(left, top), token);
             OnPropertyChanged(nameof(SavedWindowLeft));
             OnPropertyChanged(nameof(SavedWindowTop));
         }
@@ -212,6 +209,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         try
         {
+            await EnsurePreferencesLoadedAsync(token);
             if (preferences.Baseline is null)
             {
                 var hourAgo = firstAttemptBaseline.AddHours(-1);
@@ -219,20 +217,16 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 var adopted = await Task.Run(
                     () => monitor.CurrentlyRunningTurnIdsAsync(activeSince, token),
                     token);
-                MonitorPreferences? baselineCandidate = null;
-                lock (refreshSync)
-                {
-                    if (disposing || refresh.Generation != refreshGeneration || preferences.Baseline is not null)
-                        return;
+                if (!TryCommit(refresh, RefreshCommitPoint.Baseline, () => { }))
+                    return;
 
-                    baselineCandidate = preferences.Initialize(firstAttemptBaseline, adopted);
-                }
+                await MutatePreferencesAsync(
+                    current => current.Baseline is null
+                        ? current.Initialize(firstAttemptBaseline, adopted)
+                        : current,
+                    token);
 
-                await SavePreferencesAsync(baselineCandidate!, token);
-                if (!TryCommit(refresh, RefreshCommitPoint.Baseline, () =>
-                {
-                    preferences = baselineCandidate!;
-                }))
+                if (!TryCommit(refresh, RefreshCommitPoint.Baseline, () => { }))
                     return;
             }
 
@@ -293,36 +287,54 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         return insertedId;
     }
 
-    private Task SavePreferencesAsync(MonitorPreferences snapshot, CancellationToken token)
+    private async Task EnsurePreferencesLoadedAsync(CancellationToken token)
     {
-        Task previous;
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (preferenceSync)
-        {
-            previous = preferenceWrites;
-            preferenceWrites = completion.Task;
-        }
-
-        _ = SaveAfterAsync(previous, snapshot, token, completion);
-        return completion.Task;
-    }
-
-    private async Task SaveAfterAsync(
-        Task previous,
-        MonitorPreferences snapshot,
-        CancellationToken token,
-        TaskCompletionSource completion)
-    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
+        await preferenceMutationGate.WaitAsync(linked.Token).ConfigureAwait(false);
         try
         {
-            try { await previous; }
-            catch { }
-            await preferenceStore.SaveAsync(snapshot, token);
-            completion.TrySetResult();
+            if (!preferencesLoaded)
+            {
+                preferences = await preferenceStore.LoadAsync(linked.Token).ConfigureAwait(false);
+                preferencesLoaded = true;
+            }
         }
-        catch (Exception error)
+        finally
         {
-            completion.TrySetException(error);
+            preferenceMutationGate.Release();
+        }
+    }
+
+    private async Task<MonitorPreferences> MutatePreferencesAsync(
+        Func<MonitorPreferences, MonitorPreferences> mutation,
+        CancellationToken token,
+        Action<MonitorPreferences>? afterCommit = null)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
+        await preferenceMutationGate.WaitAsync(linked.Token).ConfigureAwait(false);
+        try
+        {
+            if (!preferencesLoaded)
+            {
+                preferences = await preferenceStore.LoadAsync(linked.Token).ConfigureAwait(false);
+                preferencesLoaded = true;
+            }
+
+            var committed = mutation(preferences);
+            if (!ReferenceEquals(committed, preferences))
+            {
+                await preferenceStore.SaveAsync(committed, linked.Token).ConfigureAwait(false);
+                linked.Token.ThrowIfCancellationRequested();
+                preferences = committed;
+            }
+
+            afterCommit?.Invoke(preferences);
+            return preferences;
+        }
+        finally
+        {
+            preferenceMutationGate.Release();
         }
     }
 
@@ -407,29 +419,24 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
             disposal = completion.Task;
         }
 
-        Task pendingWrites;
-        lock (preferenceSync)
-        {
-            pendingWrites = preferenceWrites;
-        }
-
-        _ = DisposeCoreAsync(poll, refreshes, pendingWrites, completion);
+        _ = DisposeCoreAsync(poll, refreshes, completion);
         return new ValueTask(disposal);
     }
 
     private async Task DisposeCoreAsync(
         Task? poll,
         IReadOnlyCollection<Task> refreshes,
-        Task pendingWrites,
         TaskCompletionSource completion)
     {
         try
         {
             await AwaitWithoutFailureAsync(poll);
             await AwaitWithoutFailureAsync(Task.WhenAll(refreshes));
-            await AwaitWithoutFailureAsync(pendingWrites);
+            await preferenceMutationGate.WaitAsync().ConfigureAwait(false);
+            preferenceMutationGate.Release();
             lifetime.Dispose();
             refreshGate.Dispose();
+            preferenceMutationGate.Dispose();
             completion.TrySetResult();
         }
         catch (Exception error)
