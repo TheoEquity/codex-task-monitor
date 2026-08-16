@@ -49,7 +49,7 @@
                         HorizontalContentAlignment="Stretch" ToolTip="打开此 Codex 任务" automation:AutomationProperties.Name="打开任务">
                   <StackPanel>
                     <TextBlock Text="{Binding Title}" Foreground="White" FontSize="13" TextTrimming="CharacterEllipsis" />
-                    <TextBlock Foreground="#94A3B8" FontSize="10.5"><Run Text="{Binding StateText}" /><Run Text=" · " /><Run Text="{Binding ProjectName}" /></TextBlock>
+                    <TextBlock Foreground="#94A3B8" FontSize="10.5"><Run Text="{Binding StateText, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding ProjectName, Mode=OneWay}" /></TextBlock>
                   </StackPanel>
                 </Button>
                 <Button Grid.Column="2" Tag="{Binding}" Click="Dismiss_Click" Content="已处理" FontSize="10.5" Padding="7,4"
