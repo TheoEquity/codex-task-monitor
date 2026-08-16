@@ -11,6 +11,8 @@
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    <AllowedReferenceRelatedFileExtensions>.xml;.pri;.dll.config;.exe.config</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CodexTaskMonitor.Core\CodexTaskMonitor.Core.csproj" />

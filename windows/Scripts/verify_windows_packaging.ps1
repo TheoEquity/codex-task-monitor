@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$RequireOutputs
+    [switch]$RequireOutputs,
+    [string]$ExpectedInstallerSha256
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,46 @@ function Assert-Contains {
     )
 
     Assert-Condition ($Text.Contains($Expected)) "Expected '$Path' to contain '$Expected'."
+}
+
+function Get-ObjectProperty {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Find-WorkflowStep {
+    param(
+        [object[]]$Steps,
+        [string]$Property,
+        [string]$ExpectedValue
+    )
+
+    return @($Steps | Where-Object { (Get-ObjectProperty $_ $Property) -eq $ExpectedValue })
+}
+
+function Assert-WindowsExecutable {
+    param(
+        [string]$Path,
+        [string]$Description
+    )
+
+    Assert-Condition (Test-Path -LiteralPath $Path -PathType Leaf) "Missing ${Description}: $Path"
+    Assert-Condition ((Get-Item -LiteralPath $Path).Length -gt 0) "$Description is empty: $Path"
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $header = New-Object byte[] 2
+        $bytesRead = $stream.Read($header, 0, $header.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    Assert-Condition ($bytesRead -eq 2 -and $header[0] -eq 0x4D -and $header[1] -eq 0x5A) "$Description is not a Windows executable: $Path"
 }
 
 $projectPath = Join-Path $repositoryRoot 'windows\CodexTaskMonitor.Windows\CodexTaskMonitor.Windows.csproj'
@@ -67,17 +108,64 @@ foreach ($expectedValue in @(
 $workflowPath = Join-Path $repositoryRoot '.github\workflows\windows.yml'
 Assert-Condition (Test-Path -LiteralPath $workflowPath) "Missing workflow: $workflowPath"
 $workflow = Get-Content -LiteralPath $workflowPath -Raw
-Assert-Condition (-not $workflow.Contains('run: "& ')) 'Workflow commands containing Windows paths must use a YAML single-quoted scalar.'
-foreach ($expectedValue in @(
-    'dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore',
-    'dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64',
-    "C:\Program Files\Inno Setup 7\ISCC.exe",
-    'actions/upload-artifact@v4',
-    "startsWith(github.ref, 'refs/tags/v')",
-    'gh release upload $tag windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe --clobber'
-)) {
-    Assert-Contains $workflow $expectedValue $workflowPath
+$converter = Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue
+if ($null -ne $converter) {
+    $workflowObject = $workflow | & $converter.Source
 }
+else {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    Assert-Condition ($null -ne $python) 'ConvertFrom-Yaml or Python with PyYAML is required to validate the workflow structure.'
+    $workflowJson = $workflow | & $python.Source -c 'import json, sys, yaml; print(json.dumps(yaml.safe_load(sys.stdin.read())))'
+    Assert-Condition ($LASTEXITCODE -eq 0) 'Python/PyYAML could not parse the GitHub Actions workflow.'
+    $workflowObject = $workflowJson | ConvertFrom-Json
+}
+
+Assert-Condition ((Get-ObjectProperty (Get-ObjectProperty $workflowObject 'permissions') 'contents') -eq 'write') 'Workflow must grant contents: write for tag releases.'
+$jobs = Get-ObjectProperty $workflowObject 'jobs'
+$packageJob = Get-ObjectProperty $jobs 'build-test-package'
+Assert-Condition ($null -ne $packageJob) 'Workflow must define the build-test-package job.'
+Assert-Condition ((Get-ObjectProperty $packageJob 'runs-on') -eq 'windows-latest') 'Packaging job must run on windows-latest.'
+$steps = @(Get-ObjectProperty $packageJob 'steps')
+
+$checkout = @(Find-WorkflowStep $steps 'uses' 'actions/checkout@v4')
+Assert-Condition ($checkout.Count -eq 1) 'Workflow must check out source with actions/checkout@v4.'
+$setupDotnet = @(Find-WorkflowStep $steps 'uses' 'actions/setup-dotnet@v4')
+Assert-Condition ($setupDotnet.Count -eq 1) 'Workflow must install .NET with actions/setup-dotnet@v4.'
+$setupDotnetWith = Get-ObjectProperty $setupDotnet[0] 'with'
+Assert-Condition ((Get-ObjectProperty $setupDotnetWith 'dotnet-version') -eq '8.0.424') 'Workflow must pin the .NET SDK to 8.0.424.'
+$cacheValue = Get-ObjectProperty $setupDotnetWith 'cache'
+if ("$cacheValue" -ieq 'true') {
+    $cacheDependencyPath = Get-ObjectProperty $setupDotnetWith 'cache-dependency-path'
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace("$cacheDependencyPath")) 'setup-dotnet cache requires cache-dependency-path entries for packages.lock.json files.'
+    $cacheInputs = @("$cacheDependencyPath" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $resolvedCacheInputs = @()
+    foreach ($cacheInput in $cacheInputs) {
+        $resolvedCacheInputs += @(Get-ChildItem -Path (Join-Path $repositoryRoot $cacheInput) -File -ErrorAction SilentlyContinue)
+    }
+    Assert-Condition ($resolvedCacheInputs.Count -gt 0 -and @($resolvedCacheInputs | Where-Object { $_.Name -ne 'packages.lock.json' }).Count -eq 0) 'setup-dotnet cache may only target existing NuGet packages.lock.json files.'
+}
+
+foreach ($expectedRun in @(
+    'dotnet restore windows/CodexTaskMonitor.sln',
+    'dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"',
+    'dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64',
+    'winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements',
+    "& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss"
+)) {
+    Assert-Condition (@(Find-WorkflowStep $steps 'run' $expectedRun).Count -eq 1) "Workflow is missing the required command: $expectedRun"
+}
+
+$artifactStep = @(Find-WorkflowStep $steps 'uses' 'actions/upload-artifact@v4')
+Assert-Condition ($artifactStep.Count -eq 1) 'Workflow must upload the packaged Windows outputs.'
+$artifactPaths = @(("$(Get-ObjectProperty (Get-ObjectProperty $artifactStep[0] 'with') 'path')" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }))
+foreach ($artifactPath in @('windows/publish/win-x64/**', 'windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe', 'windows/CodexTaskMonitor.Tests/TestResults/**')) {
+    Assert-Condition ($artifactPaths -contains $artifactPath) "Workflow artifact upload is missing: $artifactPath"
+}
+
+$releaseStep = @(Find-WorkflowStep $steps 'name' 'Create or update tag release')
+Assert-Condition ($releaseStep.Count -eq 1) 'Workflow must include the tag release upload step.'
+Assert-Condition ((Get-ObjectProperty $releaseStep[0] 'if') -eq "startsWith(github.ref, 'refs/tags/v')") 'Release upload must only run for v* tags.'
+Assert-Contains (Get-ObjectProperty $releaseStep[0] 'run') 'gh release upload $tag windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe --clobber' $workflowPath
 
 foreach ($generatedPath in @('windows/publish/win-x64/CodexTaskMonitor.exe', 'windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe')) {
     git -C $repositoryRoot check-ignore -q -- $generatedPath
@@ -88,11 +176,19 @@ if ($RequireOutputs) {
     $publishDirectory = Join-Path $repositoryRoot 'windows\publish\win-x64'
     $appPath = Join-Path $publishDirectory 'CodexTaskMonitor.exe'
     $installerOutputPath = Join-Path $repositoryRoot 'windows\artifacts\Codex-Task-Monitor-Windows-x64-Setup.exe'
-    Assert-Condition (Test-Path -LiteralPath $appPath -PathType Leaf) "Missing self-contained application: $appPath"
-    Assert-Condition ((Get-Item -LiteralPath $appPath).Length -gt 0) "Published application is empty: $appPath"
-    Assert-Condition ([System.IO.File]::ReadAllBytes($appPath)[0] -eq 0x4D -and [System.IO.File]::ReadAllBytes($appPath)[1] -eq 0x5A) "Published application is not a Windows executable: $appPath"
-    Assert-Condition (Test-Path -LiteralPath $installerOutputPath -PathType Leaf) "Missing installer: $installerOutputPath"
-    Assert-Condition ((Get-Item -LiteralPath $installerOutputPath).Length -gt 0) "Installer is empty: $installerOutputPath"
+    Assert-WindowsExecutable $appPath 'self-contained application'
+    $publishFiles = @(Get-ChildItem -LiteralPath $publishDirectory -File)
+    Assert-Condition ($publishFiles.Count -eq 1 -and $publishFiles[0].Name -eq 'CodexTaskMonitor.exe') 'Self-contained publish directory must contain only CodexTaskMonitor.exe.'
+    Assert-Condition (@($publishFiles | Where-Object { $_.Extension -eq '.dll' -or $_.Name -match '\.(runtimeconfig|deps)\.json$' }).Count -eq 0) 'Self-contained publish directory must not contain managed runtime dependencies.'
+    Assert-Condition ((Get-AuthenticodeSignature -LiteralPath $appPath).Status -eq 'NotSigned') 'First release application must be unsigned.'
+    Assert-WindowsExecutable $installerOutputPath 'installer'
+    Assert-Condition ((Get-AuthenticodeSignature -LiteralPath $installerOutputPath).Status -eq 'NotSigned') 'First release installer must be unsigned.'
+    $installerHash = (Get-FileHash -LiteralPath $installerOutputPath -Algorithm SHA256).Hash
+    Assert-Condition ($installerHash -match '^[A-F0-9]{64}$') 'Installer SHA-256 must be a 64-character hexadecimal digest.'
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedInstallerSha256)) {
+        Assert-Condition ($installerHash -eq $ExpectedInstallerSha256.ToUpperInvariant()) 'Installer SHA-256 does not match ExpectedInstallerSha256.'
+    }
+    Write-Output "InstallerSHA256=$installerHash"
 }
 
 Write-Output 'Windows packaging configuration is valid.'

@@ -26,11 +26,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.424'
-          cache: true
-          cache-dependency-path: |
-            windows/**/*.csproj
-            windows/Directory.Packages.props
-            global.json
       - name: Restore
         run: dotnet restore windows/CodexTaskMonitor.sln
       - name: Test
