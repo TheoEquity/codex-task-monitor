@@ -16,7 +16,11 @@ public sealed class LocalDiagnostics : ILocalDiagnostics
         "monitor-scan-failure",
         "startup-registration-failure",
         "uia-failure",
-        "uia-timeout"
+        "uia-timeout",
+        "deep-link-failed",
+        "reveal-ok",
+        "reveal-warning",
+        "reveal-error"
     };
 
     private readonly string directory;

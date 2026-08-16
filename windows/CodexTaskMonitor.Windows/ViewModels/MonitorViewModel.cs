@@ -39,7 +39,8 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private Task preferenceWrites = Task.CompletedTask;
     private Task? polling;
     private Task? disposal;
-    private string? errorMessage;
+    private string? actionErrorMessage;
+    private string? scanErrorMessage;
     private long refreshGeneration;
     private bool disposing;
     private TimeSpan nextPollDelay = NormalPollDelay;
@@ -78,7 +79,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
 
     public ObservableCollection<MonitorItemViewModel> Items { get; } = [];
-    public string? ErrorMessage { get => errorMessage; private set => SetErrorMessage(value); }
+    public string? ErrorMessage => actionErrorMessage ?? scanErrorMessage;
     public bool HasError => ErrorMessage is not null;
     public double PanelHeight => MonitorPanelLayout.Height(Items.Count, HasError);
     public double? SavedWindowLeft => preferences.WindowLeft;
@@ -122,7 +123,8 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async Task OpenAsync(MonitorItemViewModel item, CancellationToken token)
     {
-        try { ErrorMessage = await activation.ActivateAsync(item.Item, token); }
+        SetActionError(null);
+        try { SetActionError(await activation.ActivateAsync(item.Item, token)); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { ReportActionFailure(); }
     }
@@ -175,7 +177,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         return completion.Task;
     }
 
-    public void ReportActionFailure() => ErrorMessage = ActionFailureMessage;
+    public void ReportActionFailure() => SetActionError(ActionFailureMessage);
 
     private async Task RunRefreshAsync(RefreshScope refresh, CancellationToken callerToken, TaskCompletionSource completion)
     {
@@ -214,7 +216,9 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
             {
                 var hourAgo = firstAttemptBaseline.AddHours(-1);
                 var activeSince = launchTime.GetLaunchTime() is { } launched && launched > hourAgo ? launched : hourAgo;
-                var adopted = await monitor.CurrentlyRunningTurnIdsAsync(activeSince, token);
+                var adopted = await Task.Run(
+                    () => monitor.CurrentlyRunningTurnIdsAsync(activeSince, token),
+                    token);
                 MonitorPreferences? baselineCandidate = null;
                 lock (refreshSync)
                 {
@@ -237,13 +241,13 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 preferences.AdoptedTurnIds,
                 preferences.DismissedTurnIds,
                 preferences.DismissedItemIds);
-            var result = await monitor.ScanAsync(scanOptions, token);
+            var result = await Task.Run(() => monitor.ScanAsync(scanOptions, token), token);
             string? insertedId = null;
             var applied = TryCommit(refresh, RefreshCommitPoint.Items, () =>
             {
                 insertedId = UpdateItems(result.Items);
                 nextPollDelay = NormalPollDelay;
-                ErrorMessage = result.UnreadableRolloutCount == 0 ? null : $"{result.UnreadableRolloutCount} 个任务暂时无法读取";
+                SetScanError(result.UnreadableRolloutCount == 0 ? null : $"{result.UnreadableRolloutCount} 个任务暂时无法读取");
             });
             if (applied && insertedId is not null)
                 ItemInserted?.Invoke(this, insertedId);
@@ -256,7 +260,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 nextPollDelay = error is CodexDataException { Error: CodexDataError.DatabaseMissing }
                     ? MissingDatabasePollDelay
                     : NormalPollDelay;
-                ErrorMessage = UserMessage(error);
+                SetScanError(UserMessage(error));
             });
         }
     }
@@ -349,12 +353,26 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
-    private void SetErrorMessage(string? value)
+    private void SetScanError(string? value)
     {
-        if (errorMessage == value)
+        if (scanErrorMessage == value)
             return;
 
-        errorMessage = value;
+        scanErrorMessage = value;
+        RaiseErrorProperties();
+    }
+
+    private void SetActionError(string? value)
+    {
+        if (actionErrorMessage == value)
+            return;
+
+        actionErrorMessage = value;
+        RaiseErrorProperties();
+    }
+
+    private void RaiseErrorProperties()
+    {
         OnPropertyChanged(nameof(ErrorMessage));
         OnPropertyChanged(nameof(HasError));
         OnPropertyChanged(nameof(PanelHeight));
