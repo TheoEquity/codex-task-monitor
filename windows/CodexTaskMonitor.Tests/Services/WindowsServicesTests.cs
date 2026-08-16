@@ -46,6 +46,35 @@ public sealed class WindowsServicesTests
     }
 
     [Fact]
+    public async Task SingleInstance_DeliversActivationThatArrivedBeforeSubscriptionAndContinuesSignaling()
+    {
+        var name = $"CodexTaskMonitor.Tests.{Guid.NewGuid():N}";
+        using var first = SingleInstanceService.TryAcquire(name);
+        using var second = SingleInstanceService.TryAcquire(name);
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        var firstActivation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondActivation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var activationCount = 0;
+        first.ActivationRequested += (_, _) =>
+        {
+            var count = Interlocked.Increment(ref activationCount);
+            if (count == 1)
+                firstActivation.TrySetResult();
+            if (count == 2)
+                secondActivation.TrySetResult();
+        };
+
+        await firstActivation.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, Volatile.Read(ref activationCount));
+
+        using var third = SingleInstanceService.TryAcquire(name);
+
+        await secondActivation.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(2, Volatile.Read(ref activationCount));
+    }
+
+    [Fact]
     public async Task SingleInstance_ActivationHandlerCanDisposeOwner()
     {
         var name = $"CodexTaskMonitor.Tests.{Guid.NewGuid():N}";

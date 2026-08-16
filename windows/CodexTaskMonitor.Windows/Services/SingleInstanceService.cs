@@ -9,11 +9,40 @@ public sealed class SingleInstanceService : IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly Task listener;
     private readonly TaskCompletionSource<bool> ownership = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object activationSync = new();
+    private EventHandler? activationRequested;
+    private bool activationPending;
     private int disposed;
 
     public bool IsOwner { get; }
 
-    public event EventHandler? ActivationRequested;
+    public event EventHandler? ActivationRequested
+    {
+        add
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            var dispatchPending = false;
+            lock (activationSync)
+            {
+                activationRequested += value;
+                if (activationPending)
+                {
+                    activationPending = false;
+                    dispatchPending = true;
+                }
+            }
+
+            if (dispatchPending)
+                QueueActivation(value);
+        }
+        remove
+        {
+            lock (activationSync)
+            {
+                activationRequested -= value;
+            }
+        }
+    }
 
     private SingleInstanceService(Mutex mutex, EventWaitHandle activationSignal)
     {
@@ -100,7 +129,7 @@ public sealed class SingleInstanceService : IDisposable
                 if (lifetime.IsCancellationRequested)
                     return;
 
-                _ = Task.Run(NotifyActivation);
+                OnActivationSignal();
             }
         }
         catch (Exception error)
@@ -131,11 +160,32 @@ public sealed class SingleInstanceService : IDisposable
         return sid;
     }
 
-    private void NotifyActivation()
+    private void OnActivationSignal()
+    {
+        EventHandler? handlers;
+        lock (activationSync)
+        {
+            handlers = activationRequested;
+            if (handlers is null)
+            {
+                activationPending = true;
+                return;
+            }
+        }
+
+        QueueActivation(handlers);
+    }
+
+    private void QueueActivation(EventHandler handlers)
+    {
+        _ = Task.Run(() => NotifyActivation(handlers));
+    }
+
+    private void NotifyActivation(EventHandler handlers)
     {
         try
         {
-            ActivationRequested?.Invoke(this, EventArgs.Empty);
+            handlers(this, EventArgs.Empty);
         }
         catch
         {
