@@ -11,7 +11,7 @@
 - 点击“已处理”只移除对应任务。
 - 自动注册为登录时启动。
 
-## 要求
+## 要求（macOS）
 
 - macOS 26 或更高版本。
 - 已安装并运行 Codex 桌面应用。
@@ -19,7 +19,7 @@
 
 所有任务数据均从本机 `~/.codex` 只读获取，不上传到外部服务。
 
-## 构建
+## 构建（macOS）
 
 ```bash
 swift run -Xswiftc -warnings-as-errors CoreChecks
@@ -31,3 +31,37 @@ Scripts/package_app.sh
 ## 已知边界
 
 Codex 的 macOS 辅助功能树不提供任务 UUID。监控器会先通过官方 `codex://threads/<UUID>` 深链精确打开正文，再按当前项目和完整标题定位侧栏；同一分组存在重名任务或旧任务缺少会话索引时，只打开正文，不猜测侧栏位置。
+
+## Windows 11
+
+The Windows build is a separate .NET 8/WPF implementation under `windows/`. It reads the same
+local Codex state in `%USERPROFILE%\.codex` and uses the registered `codex://` protocol plus
+Windows UI Automation. The macOS requirements and build commands above remain unchanged.
+
+### Windows build and install
+
+Run these commands in PowerShell on Windows 11 x64:
+
+```powershell
+dotnet test windows/CodexTaskMonitor.sln -c Release
+dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -o windows/publish/win-x64
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss
+```
+
+The resulting per-user installer is
+`windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe`. It installs without elevation to
+the current user's local application directory and includes the .NET runtime required by the
+application.
+
+### Privacy and compatibility
+
+The monitor reads Codex state locally and does not upload task data. The target-machine verifier
+uses `sqlite3` only in read-only mode and emits only fixed boolean fields. Sidebar reveal depends
+on the current Windows Codex/ChatGPT UI Automation structure. Missing or ambiguous matches safely
+degrade to opening the thread body without clicking a sidebar item. The first installer is unsigned
+and may trigger Windows SmartScreen.
+
+The panel follows the active Windows virtual desktop's native behavior; the first release does
+not use undocumented APIs to pin itself across every virtual desktop. See
+`docs/windows-manual-test.md` for the acceptance checklist and the checks that still require a
+real Codex interaction, visual confirmation, or reboot.
