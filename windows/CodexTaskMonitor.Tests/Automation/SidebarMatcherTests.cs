@@ -157,6 +157,18 @@ public sealed class SidebarMatcherTests
             SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Projectless())).Status);
     }
 
+    [Fact]
+    public void TruncatedSnapshot_NeverAcceptsAnOtherwiseUniqueItem()
+    {
+        var snapshot = new AutomationSnapshot(
+            new Rect(0, 0, 1000, 800),
+            [Node("task", "ControlType.ListItem", "Exact title", ["root", "sidebar"])],
+            IsTruncated: true);
+
+        Assert.Equal(SidebarMatchStatus.Ambiguous,
+            SidebarMatcher.Match(snapshot, new SidebarTarget("Exact title", SidebarThreadGroup.Projectless())).Status);
+    }
+
     private static AutomationNode Node(
         string id,
         string controlType,

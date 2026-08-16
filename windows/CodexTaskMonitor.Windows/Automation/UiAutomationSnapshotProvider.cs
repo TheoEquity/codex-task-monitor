@@ -63,6 +63,7 @@ public sealed class UiAutomationSnapshotProvider : IUiAutomationSnapshotProvider
         var queue = new Queue<(IAutomationTreeNode Element, string[] Ancestors)>();
         queue.Enqueue((root, []));
         var nodes = new List<AutomationNode>();
+        var isTruncated = false;
 
         while (queue.Count > 0 && nodes.Count < MaximumElementCount)
         {
@@ -84,11 +85,14 @@ public sealed class UiAutomationSnapshotProvider : IUiAutomationSnapshotProvider
 
                 var childAncestors = ancestors.Append(runtimeId).ToArray();
                 using var children = element.Children.GetEnumerator();
-                while (nodes.Count + queue.Count < MaximumElementCount)
+                while (children.MoveNext())
                 {
                     token.ThrowIfCancellationRequested();
-                    if (!children.MoveNext())
+                    if (nodes.Count + queue.Count >= MaximumElementCount)
+                    {
+                        isTruncated = true;
                         break;
+                    }
                     queue.Enqueue((children.Current, childAncestors));
                 }
             }
@@ -97,7 +101,7 @@ public sealed class UiAutomationSnapshotProvider : IUiAutomationSnapshotProvider
             }
         }
 
-        return new AutomationSnapshot(windowBounds, nodes);
+        return new AutomationSnapshot(windowBounds, nodes, isTruncated || queue.Count > 0);
     }
 
     private sealed class AutomationElementTreeNode(AutomationElement element) : IAutomationTreeNode

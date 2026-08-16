@@ -38,6 +38,19 @@ public sealed class SidebarScrollControllerTests
     }
 
     [Fact]
+    public async Task Reveal_TruncatedSnapshotStopsWithoutInput()
+    {
+        var snapshot = Page("top", targetTitle: "Wanted") with { IsTruncated = true };
+        var environment = FakeAutomationEnvironment.WithPages(0, snapshot);
+
+        var result = await new SidebarScrollController(environment, environment, TimeProvider.System, TimeSpan.Zero, 80, TimeSpan.FromSeconds(8))
+            .RevealAsync(123, new SidebarTarget("Wanted", SidebarThreadGroup.Projectless()), default);
+
+        Assert.Equal(SidebarScrollStatus.Ambiguous, result.Status);
+        Assert.Empty(environment.Actions);
+    }
+
+    [Fact]
     public async Task Reveal_MissingSidebarRegionFailsWithoutInput()
     {
         var environment = FakeAutomationEnvironment.WithPages(0,

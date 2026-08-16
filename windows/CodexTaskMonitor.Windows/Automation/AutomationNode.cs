@@ -13,7 +13,10 @@ public sealed record AutomationNode(
     int TraversalIndex,
     nint NativeWindowHandle = 0);
 
-public sealed record AutomationSnapshot(Rect WindowBounds, IReadOnlyList<AutomationNode> Nodes);
+public sealed record AutomationSnapshot(
+    Rect WindowBounds,
+    IReadOnlyList<AutomationNode> Nodes,
+    bool IsTruncated = false);
 
 public enum SidebarMatchStatus
 {

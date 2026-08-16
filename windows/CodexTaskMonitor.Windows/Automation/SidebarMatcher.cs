@@ -9,6 +9,11 @@ public static class SidebarMatcher
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(target);
 
+        // A bounded UIA walk may have omitted a second identical row or the
+        // group evidence that distinguishes it.  Never drive input from it.
+        if (snapshot.IsTruncated)
+            return new SidebarMatchResult(SidebarMatchStatus.Ambiguous, null);
+
         var leftLimit = snapshot.WindowBounds.Left + snapshot.WindowBounds.Width * 0.45;
         var candidates = snapshot.Nodes.Where(node =>
             node.ControlType == "ControlType.ListItem" &&
