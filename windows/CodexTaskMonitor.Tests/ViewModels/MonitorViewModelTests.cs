@@ -172,6 +172,28 @@ public sealed class MonitorViewModelTests
     }
 
     [Fact]
+    public async Task Refresh_NewGenerationDuringBlockedBaselineSave_AdoptsAndPersistsOnlyNewGeneration()
+    {
+        var firstAdoption = new TaskCompletionSource<IReadOnlySet<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var monitor = new FakeTaskMonitor(Set(), []) { FirstAdoption = firstAdoption, NextAdoption = Set("new-turn") };
+        var preferences = new BlockingPreferencesStore(MonitorPreferences.Empty);
+        var viewModel = Create(monitor, preferences);
+
+        var oldRefresh = viewModel.RefreshAsync(CancellationToken.None);
+        await monitor.FirstAdoptionStarted.Task;
+        firstAdoption.TrySetResult(Set("old-turn"));
+        await preferences.FirstSaveStarted.Task;
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+        await oldRefresh;
+
+        Assert.Contains("new-turn", preferences.Value.AdoptedTurnIds);
+        Assert.DoesNotContain("old-turn", preferences.Value.AdoptedTurnIds);
+        Assert.Contains("new-turn", monitor.LastScanOptions!.AdoptedTurnIds);
+        Assert.DoesNotContain("old-turn", monitor.LastScanOptions.AdoptedTurnIds);
+    }
+
+    [Fact]
     public async Task Refresh_NewGenerationBeforeItemCommit_DoesNotPublishStaleItems()
     {
         var initial = new MonitorItem("thread", "initial", "Initial", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Running);
@@ -270,6 +292,8 @@ public sealed class MonitorViewModelTests
 
         public MonitorScanResult? NextScanResult { get; set; }
 
+        public MonitorScanOptions? LastScanOptions { get; private set; }
+
         public async Task<IReadOnlySet<string>> CurrentlyRunningTurnIdsAsync(DateTimeOffset since, CancellationToken token)
         {
             if (FirstAdoption is { } firstAdoption)
@@ -284,6 +308,7 @@ public sealed class MonitorViewModelTests
 
         public async Task<MonitorScanResult> ScanAsync(MonitorScanOptions options, CancellationToken token)
         {
+            LastScanOptions = options;
             if (FirstScan is { } firstScan)
             {
                 FirstScan = null;
@@ -320,6 +345,29 @@ public sealed class MonitorViewModelTests
 
         public Task<string?> ActivateAsync(MonitorItem item, CancellationToken token) =>
             Exception is null ? Task.FromResult<string?>(null) : Task.FromException<string?>(Exception);
+    }
+
+    private sealed class BlockingPreferencesStore(MonitorPreferences initial) : IMonitorPreferencesStore
+    {
+        private bool firstSave = true;
+
+        public MonitorPreferences Value { get; private set; } = initial;
+
+        public TaskCompletionSource<bool> FirstSaveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<MonitorPreferences> LoadAsync(CancellationToken token) => Task.FromResult(Value);
+
+        public async Task SaveAsync(MonitorPreferences value, CancellationToken token)
+        {
+            if (firstSave)
+            {
+                firstSave = false;
+                FirstSaveStarted.TrySetResult(true);
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+
+            Value = value;
+        }
     }
 
     private sealed class FakeStartup(bool enabled = false) : IStartupRegistration

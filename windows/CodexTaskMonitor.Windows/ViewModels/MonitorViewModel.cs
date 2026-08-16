@@ -215,15 +215,21 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 var hourAgo = firstAttemptBaseline.AddHours(-1);
                 var activeSince = launchTime.GetLaunchTime() is { } launched && launched > hourAgo ? launched : hourAgo;
                 var adopted = await monitor.CurrentlyRunningTurnIdsAsync(activeSince, token);
-                MonitorPreferences? baselineSnapshot = null;
+                MonitorPreferences? baselineCandidate = null;
+                lock (refreshSync)
+                {
+                    if (disposing || refresh.Generation != refreshGeneration || preferences.Baseline is not null)
+                        return;
+
+                    baselineCandidate = preferences.Initialize(firstAttemptBaseline, adopted);
+                }
+
+                await SavePreferencesAsync(baselineCandidate!, token);
                 if (!TryCommit(refresh, RefreshCommitPoint.Baseline, () =>
                 {
-                    preferences = preferences.Initialize(firstAttemptBaseline, adopted);
-                    baselineSnapshot = preferences;
+                    preferences = baselineCandidate!;
                 }))
                     return;
-
-                await SavePreferencesAsync(baselineSnapshot!, token);
             }
 
             var scanOptions = new MonitorScanOptions(
