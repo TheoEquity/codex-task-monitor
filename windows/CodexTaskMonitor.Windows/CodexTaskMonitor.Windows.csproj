@@ -6,5 +6,11 @@
     <AssemblyName>CodexTaskMonitor</AssemblyName>
     <RootNamespace>CodexTaskMonitor.Windows</RootNamespace>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="..\CodexTaskMonitor.Core\CodexTaskMonitor.Core.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CodexTaskMonitor.Core\CodexTaskMonitor.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="UIAutomationClient, Version=8.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" />
+    <Reference Include="UIAutomationTypes, Version=8.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" />
+  </ItemGroup>
 </Project>
