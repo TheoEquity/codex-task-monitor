@@ -24,6 +24,41 @@ public sealed class MonitorViewModelTests
     }
 
     [Fact]
+    public async Task ParentAndForkWithSameTitle_AreIndependentNormalPanelItems()
+    {
+        var parent = new MonitorItem(
+            "parent-thread", "shared-turn", "Shared title", @"C:\work", "work",
+            DateTimeOffset.UtcNow, TaskState.Waiting);
+        var fork = new MonitorItem(
+            "fork-thread", "shared-turn", "Shared title", @"C:\work", "work",
+            DateTimeOffset.UtcNow.AddSeconds(1), TaskState.Waiting);
+        var monitor = new FakeTaskMonitor(Set(), [fork, parent]);
+        var preferences = new FakePreferencesStore(
+            new MonitorPreferences(DateTimeOffset.UtcNow.AddHours(-1), [], [], [], null, null, true));
+        var activation = new FakeActivation();
+        var viewModel = new MonitorViewModel(
+            monitor, preferences, activation, new FakeStartup(), new FakeLaunchTime(null), TimeProvider.System);
+        await viewModel.StartAsync(startPollingLoop: false, CancellationToken.None);
+
+        Assert.Equal(
+            ["fork-thread:shared-turn", "parent-thread:shared-turn"],
+            viewModel.Items.Select(item => item.Id).ToArray());
+        Assert.All(viewModel.Items, item =>
+        {
+            Assert.Equal("Shared title", item.Title);
+            Assert.True(item.CanDismiss);
+        });
+
+        var forkItem = viewModel.Items.Single(item => item.Item.ThreadId == "fork-thread");
+        await viewModel.OpenAsync(forkItem, CancellationToken.None);
+        await viewModel.DismissAsync(forkItem, CancellationToken.None);
+
+        Assert.Equal("fork-thread:shared-turn", activation.LastItem!.Id);
+        Assert.Contains("fork-thread:shared-turn", preferences.Value.DismissedItemIds);
+        Assert.DoesNotContain("parent-thread:shared-turn", preferences.Value.DismissedItemIds);
+    }
+
+    [Fact]
     public async Task Dismiss_PersistsExactWaitingItemAndRefreshes()
     {
         var item = new MonitorItem("thread", "turn", "Task", @"C:\work", "work", DateTimeOffset.UtcNow, TaskState.Waiting);
@@ -405,8 +440,15 @@ public sealed class MonitorViewModelTests
     {
         public Exception? Exception { get; init; }
 
-        public Task<string?> ActivateAsync(MonitorItem item, CancellationToken token) =>
-            Exception is null ? Task.FromResult<string?>(null) : Task.FromException<string?>(Exception);
+        public MonitorItem? LastItem { get; private set; }
+
+        public Task<string?> ActivateAsync(MonitorItem item, CancellationToken token)
+        {
+            LastItem = item;
+            return Exception is null
+                ? Task.FromResult<string?>(null)
+                : Task.FromException<string?>(Exception);
+        }
     }
 
     private sealed class BlockingPreferencesStore(MonitorPreferences initial) : IMonitorPreferencesStore
