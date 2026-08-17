@@ -17,7 +17,7 @@
 - 已安装并运行 Codex 桌面应用。
 - 首次使用侧栏定位时，在系统设置中授予辅助功能权限。
 
-所有任务数据均从本机 `~/.codex` 只读获取，不上传到外部服务。
+默认情况下，所有任务数据均从本机 `~/.codex` 只读获取，不上传到外部服务。Windows 用户主动完成下述 Bark 一次性接入后，应用只会把任务标题、项目名和完成/中止状态发送到用户配置的 Bark 服务，并由其转交 Apple 推送服务。
 
 ## 构建（macOS）
 
@@ -53,13 +53,35 @@ The resulting per-user installer is
 the current user's local application directory and includes the .NET runtime required by the
 application.
 
+### Optional Bark notifications
+
+The Windows build can send an iPhone notification when a Codex task completes or is aborted.
+There is no in-app Bark settings screen. Provision the current Windows account once:
+
+1. Exit Codex Task Monitor.
+2. Copy a complete sample URL from Bark on the iPhone, such as its `Body Text` sample, to the
+   Windows clipboard.
+3. Run `pwsh -NoProfile -File windows/Scripts/provision_bark.ps1` from the repository root.
+
+The script sends a fixed test notification before saving anything. On success it stores only an
+encrypted endpoint in `%LOCALAPPDATA%\CodexTaskMonitor\bark-secret.dat` using Windows DPAPI
+CurrentUser scope, plus non-secret delivery state in `bark-state.json`. It never prints the Bark
+URL or accepts it as a command-line argument.
+
+Normal completion notifications use the task title as the notification title and the project name
+as the body. Aborted tasks append `· 已中止` to the body. Successfully delivered task identities
+are retained locally to prevent duplicate pushes across polling and restarts.
+
 ### Privacy and compatibility
 
-The monitor reads Codex state locally and does not upload task data. The target-machine verifier
-uses `sqlite3` only in read-only mode and emits only fixed boolean fields. Sidebar reveal depends
-on the current Windows Codex/ChatGPT UI Automation structure. Missing or ambiguous matches safely
-degrade to opening the thread body without clicking a sidebar item. The first installer is unsigned
-and may trigger Windows SmartScreen.
+The monitor reads Codex state locally. Unless the user has provisioned Bark, it does not upload task
+data. When Bark is provisioned, only the task title, project name, terminal status, and fixed
+notification group leave the machine; thread IDs, turn IDs, prompts, rollout contents, full working
+directory paths, and Codex credentials are never included. The target-machine verifier uses
+`sqlite3` only in read-only mode and emits only fixed boolean fields. Sidebar reveal depends on the
+current Windows Codex/ChatGPT UI Automation structure. Missing or ambiguous matches safely degrade
+to opening the thread body without clicking a sidebar item. The first installer is unsigned and may
+trigger Windows SmartScreen.
 
 The panel follows the active Windows virtual desktop's native behavior; the first release does
 not use undocumented APIs to pin itself across every virtual desktop. See
