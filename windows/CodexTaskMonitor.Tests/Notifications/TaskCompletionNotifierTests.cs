@@ -178,6 +178,43 @@ public sealed class TaskCompletionNotifierTests
         }
     }
 
+    [Fact]
+    public async Task RecoveredInfrastructure_ClearsConfigurationWarningWithoutNeedingASend()
+    {
+        var configurationId = Guid.NewGuid();
+        var enabledAt = DateTimeOffset.UtcNow;
+        var stateStore = new ThrowingFirstLoadStateStore(
+            new BarkState(true, configurationId, enabledAt, []));
+        await using var notifier = new TaskCompletionNotifier(
+            stateStore,
+            new FixedSecretStore(new BarkSecret(configurationId, new Uri("https://example.invalid/device-key"))),
+            new SequencedClient(),
+            new NullDiagnostics(),
+            TimeProvider.System,
+            initialRetryDelay: TimeSpan.FromMilliseconds(20),
+            maxRetryDelay: TimeSpan.FromMilliseconds(40));
+        var failureWarning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clearedWarning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sawFailure = false;
+        notifier.WarningChanged += (_, warning) =>
+        {
+            if (warning == "Bark 配置不可用")
+            {
+                sawFailure = true;
+                failureWarning.TrySetResult();
+            }
+            else if (warning is null && sawFailure)
+            {
+                clearedWarning.TrySetResult();
+            }
+        };
+
+        notifier.Observe([]);
+        await failureWarning.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await clearedWarning.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -536,6 +573,21 @@ public sealed class TaskCompletionNotifierTests
 
         public Task<bool> MarkNotifiedAsync(Guid expectedConfigurationId, string itemId, CancellationToken token) =>
             inner.MarkNotifiedAsync(expectedConfigurationId, itemId, token);
+    }
+
+    private sealed class ThrowingFirstLoadStateStore(BarkState state) : IBarkStateStore
+    {
+        private int loadCount;
+
+        public Task<BarkState> LoadAsync(CancellationToken token) =>
+            Interlocked.Increment(ref loadCount) == 1
+                ? Task.FromException<BarkState>(new IOException("state unavailable"))
+                : Task.FromResult(state);
+
+        public Task SaveAsync(BarkState next, CancellationToken token) => Task.CompletedTask;
+
+        public Task<bool> MarkNotifiedAsync(Guid expectedConfigurationId, string itemId, CancellationToken token) =>
+            Task.FromResult(false);
     }
 
     private sealed class SequencedClient(params BarkSendResult[] results) : IBarkNotificationClient

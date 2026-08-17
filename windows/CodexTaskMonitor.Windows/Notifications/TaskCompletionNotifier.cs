@@ -192,7 +192,8 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
             foreach (var stale in retries.Keys.Where(id => !visibleIds.Contains(id) || removedIds.Contains(id)).ToArray())
                 retries.Remove(stale);
         }
-        if (!HasPendingRetries() && currentWarning == SendFailureWarning)
+        if (!HasPendingRetries() &&
+            (currentWarning == SendFailureWarning || currentWarning == ConfigurationWarning))
             SetWarning(null);
 
         foreach (var item in snapshot)
