@@ -15,6 +15,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
   - Evidence: Not yet recorded. Start the monitor first, open a task, and time the bounded readiness behavior.
 - [ ] A new running Codex task appears within 4 seconds with a blue dot.
   - Evidence: Not yet recorded. Start a new task and observe the panel within the stated bound.
+- [ ] Fork a user task from the Codex sidebar and confirm it appears in the monitor like a normally created task while internal subagent tasks remain absent.
+  - Evidence: Not yet recorded. Create a user-visible Fork, exercise its running and waiting states, and compare it with a normal task without recording either title or thread ID.
 - [ ] Completion and abort both change the row to green “等待处理”.
   - Evidence: Not yet recorded. Exercise one completion and one abort.
 - [ ] “已处理” hides only the selected `threadID:turnID`; two consecutive later turns each reappear.
@@ -48,8 +50,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | ED07B869E72B38445A02193251819E063E0C5FFF2778D14CF797805C3FEBEE1B |
-| Test commit SHA | b03471b22f3571f2789a3717a1cdd54f2d483d0f |
+| Installer SHA-256 | F0664CA3C272FBF789736C652AED287A52ECA8E1F97DF0D3AD7F38D76A86C4AC |
+| Test commit SHA | 2f4a9c59e9ed6003e5ba8090f6cfc09bc6c8635e |
 | Pass date | 2026-08-16 |
 
 ## Automated current-machine evidence
@@ -64,5 +66,6 @@ unchecked visual, click, Codex-interaction, reboot, or login acceptance item abo
 | HKCU Run value inspection | The fixed `CodexTaskMonitor` value was present after install, upgrade, and reinstall, and absent after uninstall. |
 | Installed files inspection | Installed executable existed after install, upgrade, and reinstall; the installation directory was absent after uninstall. |
 | Title-bar blank-area hit test | The compiled WPF title bar resolves a blank point to the title-bar `Grid`; removing its transparent background makes the regression test fail. Real pointer dragging remains a manual interaction check. |
-| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,243,971 bytes, unsigned, and was validated with its recorded SHA-256. |
-| Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist. One monitor process remained running at both 5-second and 20-second checks, with no new `.NET Runtime` or `Application Error` crash event. |
+| Visible Fork automated regression | Release tests passed 172/172. A real temporary SQLite database and JSONL rollout verified that `subagent/vscode` Forks produce normal running, completed, and aborted panel states; internal JSON subagents and unknown sources remain excluded; exact parent handled keys do not hide Forks. |
+| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,248,367 bytes, unsigned, and was validated with its recorded SHA-256. |
+| Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist. One monitor process remained running at both 5-second and 20-second checks. |
