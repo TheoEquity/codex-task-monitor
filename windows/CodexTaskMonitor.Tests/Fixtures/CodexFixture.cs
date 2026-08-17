@@ -47,7 +47,8 @@ public sealed class CodexFixture : IAsyncDisposable
         string preview,
         long updatedAtMs = 123_000,
         bool isPinned = false,
-        string? sectionId = null)
+        string? sectionId = null,
+        string? rolloutPath = null)
     {
         await using var connection = new SqliteConnection($"Data Source={DatabasePath};Pooling=False");
         await connection.OpenAsync();
@@ -59,7 +60,7 @@ public sealed class CodexFixture : IAsyncDisposable
               ($id, $rollout, $cwd, $title, $archived, $updatedAt, $threadSource, $source, $isPinned, $sectionId, $preview);
             """;
         command.Parameters.AddWithValue("$id", id);
-        command.Parameters.AddWithValue("$rollout", RolloutPath);
+        command.Parameters.AddWithValue("$rollout", rolloutPath ?? RolloutPath);
         command.Parameters.AddWithValue("$cwd", root);
         command.Parameters.AddWithValue("$title", title);
         command.Parameters.AddWithValue("$archived", archived ? 1 : 0);
