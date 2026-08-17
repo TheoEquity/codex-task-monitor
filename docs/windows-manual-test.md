@@ -50,8 +50,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | F0664CA3C272FBF789736C652AED287A52ECA8E1F97DF0D3AD7F38D76A86C4AC |
-| Test commit SHA | 2f4a9c59e9ed6003e5ba8090f6cfc09bc6c8635e |
+| Installer SHA-256 | E98D412812D046CBF1CCA930452BCD91D4ECCC5677F61875C7E4C641CFE173CE |
+| Test commit SHA | c2f9cca420ef76fd407ab2ce59333608020d7dee |
 | Pass date | 2026-08-16 |
 
 ## Automated current-machine evidence
@@ -66,6 +66,7 @@ unchecked visual, click, Codex-interaction, reboot, or login acceptance item abo
 | HKCU Run value inspection | The fixed `CodexTaskMonitor` value was present after install, upgrade, and reinstall, and absent after uninstall. |
 | Installed files inspection | Installed executable existed after install, upgrade, and reinstall; the installation directory was absent after uninstall. |
 | Title-bar blank-area hit test | The compiled WPF title bar resolves a blank point to the title-bar `Grid`; removing its transparent background makes the regression test fail. Real pointer dragging remains a manual interaction check. |
-| Visible Fork automated regression | Release tests passed 172/172. A real temporary SQLite database and JSONL rollout verified that `subagent/vscode` Forks produce normal running, completed, and aborted panel states; internal JSON subagents and unknown sources remain excluded; exact parent handled keys do not hide Forks. |
-| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,248,367 bytes, unsigned, and was validated with its recorded SHA-256. |
+| Visible Fork automated regression | Release tests passed 179/179. A real temporary SQLite database and JSONL rollout verified that `subagent/vscode` Forks produce normal running, completed, and aborted panel states; an aborted Fork without `payload.completed_at` uses its valid outer ISO-8601 `timestamp` without blocking a coexisting normal task; internal JSON subagents and unknown sources remain excluded; exact parent handled keys do not hide Forks. |
+| Privacy-safe production scan | The fixed Release production assemblies scanned current local data successfully and returned 6 panel items: 3 running, 3 waiting, and 0 unreadable. Only fixed status and counts were emitted. |
+| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,238,743 bytes, unsigned, and was validated with its recorded SHA-256. |
 | Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist. One monitor process remained running at both 5-second and 20-second checks. |
