@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
 using CodexTaskMonitor.Core.Monitoring;
 using CodexTaskMonitor.Windows.Services;
 
@@ -16,6 +18,8 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
     private const string SendFailureWarning = "Bark 通知发送失败，将自动重试";
     private const string ConfigurationWarning = "Bark 配置不可用";
     private const string StateFailureWarning = "Bark 通知状态暂时无法保存";
+    private const int MaxTitleEncodedBytes = 1_200;
+    private const int MaxBodyEncodedBytes = 500;
 
     private readonly IBarkStateStore stateStore;
     private readonly IBarkSecretStore secretStore;
@@ -206,11 +210,10 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
                 continue;
             }
 
+            var bodySuffix = item.TerminalKind == TaskTerminalKind.Aborted ? " · 已中止" : string.Empty;
             var notification = new BarkNotification(
-                item.Title,
-                item.TerminalKind == TaskTerminalKind.Aborted
-                    ? $"{item.ProjectName} · 已中止"
-                    : item.ProjectName,
+                TruncateForJson(item.Title, MaxTitleEncodedBytes),
+                TruncateForJson(item.ProjectName, MaxBodyEncodedBytes, bodySuffix),
                 "Codex Task Monitor");
             var attempt = TryBeginAttempt(item.Id, token);
             if (attempt is null)
@@ -332,6 +335,39 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
             var attempt = retries.TryGetValue(itemId, out var retry) ? retry.Attempt + 1 : 1;
             retries[itemId] = new RetryState(attempt, time.GetUtcNow().Add(RetryDelay(attempt)));
         }
+    }
+
+    private static string TruncateForJson(
+        string value,
+        int maximumEncodedBytes,
+        string suffix = "")
+    {
+        var complete = value + suffix;
+        if (JsonEncodedText.Encode(complete).EncodedUtf8Bytes.Length <= maximumEncodedBytes)
+            return complete;
+
+        const string ellipsis = "…";
+        var elementStarts = StringInfo.ParseCombiningCharacters(value);
+        var best = ellipsis + suffix;
+        var low = 0;
+        var high = elementStarts.Length - 1;
+        while (low <= high)
+        {
+            var count = low + ((high - low) / 2);
+            var end = count == elementStarts.Length ? value.Length : elementStarts[count];
+            var candidate = value[..end] + ellipsis + suffix;
+            if (JsonEncodedText.Encode(candidate).EncodedUtf8Bytes.Length <= maximumEncodedBytes)
+            {
+                best = candidate;
+                low = count + 1;
+            }
+            else
+            {
+                high = count - 1;
+            }
+        }
+
+        return best;
     }
 
     private void ScheduleInfrastructureRetry()

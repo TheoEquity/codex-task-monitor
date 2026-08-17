@@ -1,6 +1,7 @@
 using CodexTaskMonitor.Core.Monitoring;
 using CodexTaskMonitor.Windows.Notifications;
 using CodexTaskMonitor.Windows.Services;
+using System.Text.Json;
 
 namespace CodexTaskMonitor.Tests.Notifications;
 
@@ -34,6 +35,59 @@ public sealed class TaskCompletionNotifierTests
         await fixture.Client.WaitForCallsAsync(1);
 
         Assert.Equal("Project · 已中止", fixture.Client.Notifications.Single().Body);
+    }
+
+    [Fact]
+    public async Task OversizedTitle_IsTruncatedToSafeJsonPayload()
+    {
+        await using var fixture = await NotifierFixture.CreateAsync();
+        var oversizedTitle = string.Concat(Enumerable.Repeat("超长\"标题\n", 1_000));
+
+        fixture.Notifier.Observe([
+            Item(
+                TaskTerminalKind.Completed,
+                fixture.EnabledAt.AddSeconds(1),
+                title: oversizedTitle)
+        ]);
+        await fixture.Client.WaitForCallsAsync(1);
+
+        var sent = Assert.Single(fixture.Client.Notifications);
+        Assert.StartsWith("超长", sent.Title);
+        Assert.EndsWith("…", sent.Title);
+        Assert.Equal("Project", sent.Body);
+        var json = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            title = sent.Title,
+            body = sent.Body,
+            group = sent.Group
+        });
+        Assert.InRange(json.Length, 1, 2_048);
+    }
+
+    [Fact]
+    public async Task OversizedAbortedProject_IsTruncatedWithoutLosingStatus()
+    {
+        await using var fixture = await NotifierFixture.CreateAsync();
+        var oversizedProject = string.Concat(Enumerable.Repeat("项目\\名称\r", 1_000));
+
+        fixture.Notifier.Observe([
+            Item(
+                TaskTerminalKind.Aborted,
+                fixture.EnabledAt.AddSeconds(1),
+                projectName: oversizedProject)
+        ]);
+        await fixture.Client.WaitForCallsAsync(1);
+
+        var sent = Assert.Single(fixture.Client.Notifications);
+        Assert.StartsWith("项目", sent.Body);
+        Assert.EndsWith("… · 已中止", sent.Body);
+        var json = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            title = sent.Title,
+            body = sent.Body,
+            group = sent.Group
+        });
+        Assert.InRange(json.Length, 1, 2_048);
     }
 
     [Fact]
@@ -442,8 +496,10 @@ public sealed class TaskCompletionNotifierTests
         TaskTerminalKind terminalKind,
         DateTimeOffset eventDate,
         string threadId = "thread",
-        string turnId = "turn") =>
-        new(threadId, turnId, "Task title", @"C:\Project", "Project", eventDate, TaskState.Waiting, terminalKind);
+        string turnId = "turn",
+        string title = "Task title",
+        string projectName = "Project") =>
+        new(threadId, turnId, title, @"C:\Project", projectName, eventDate, TaskState.Waiting, terminalKind);
 
     private static async Task EventuallyAsync(Func<Task<bool>> condition)
     {
