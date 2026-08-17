@@ -31,7 +31,9 @@
         </Button>
       </Grid>
       <ListBox x:Name="TaskList" Grid.Row="1" ItemsSource="{Binding Items}" MaxHeight="378"
-               Background="Transparent" BorderThickness="0" ScrollViewer.VerticalScrollBarVisibility="Auto"
+               Background="Transparent" BorderThickness="0"
+               ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               ScrollViewer.VerticalScrollBarVisibility="Auto"
                automation:AutomationProperties.Name="Codex 任务列表">
         <ListBox.ItemContainerStyle>
           <Style TargetType="ListBoxItem">
@@ -43,12 +45,18 @@
           <DataTemplate>
             <Border Height="63" BorderBrush="#14FFFFFF" BorderThickness="0,1,0,0">
               <Grid Height="62" Margin="14,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="18" /><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="18" />
+                  <ColumnDefinition Width="*" MinWidth="0" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <Ellipse Width="8" Height="8" Fill="{Binding DotColor}" />
                 <Button Grid.Column="1" Tag="{Binding}" Click="Open_Click" Background="Transparent" BorderThickness="0"
-                        HorizontalContentAlignment="Stretch" ToolTip="打开此 Codex 任务" automation:AutomationProperties.Name="打开任务">
+                        MinWidth="0" ClipToBounds="True" HorizontalContentAlignment="Stretch"
+                        ToolTip="打开此 Codex 任务" automation:AutomationProperties.Name="打开任务">
                   <StackPanel>
-                    <TextBlock Text="{Binding Title}" Foreground="White" FontSize="13" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding Title}" Foreground="White" FontSize="13"
+                               TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                     <TextBlock Foreground="#94A3B8" FontSize="10.5"><Run Text="{Binding StateText, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding ProjectName, Mode=OneWay}" /></TextBlock>
                   </StackPanel>
                 </Button>
