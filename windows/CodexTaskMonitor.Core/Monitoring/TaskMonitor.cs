@@ -64,7 +64,13 @@ public sealed class TaskMonitor : ITaskMonitor
             pair.Thread.Cwd,
             projectName,
             pair.Event.ActivityDate,
-            state.Value);
+            state.Value,
+            pair.Event.Kind switch
+            {
+                LifecycleKind.Completed => TaskTerminalKind.Completed,
+                LifecycleKind.Aborted => TaskTerminalKind.Aborted,
+                _ => null
+            });
         return options.DismissedItemIds.Contains(item.Id) ? null : item;
     }
 

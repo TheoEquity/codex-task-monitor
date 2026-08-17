@@ -7,7 +7,8 @@ public sealed record MonitorItem(
     string Cwd,
     string ProjectName,
     DateTimeOffset EventDate,
-    TaskState State)
+    TaskState State,
+    TaskTerminalKind? TerminalKind = null)
 {
     public string Id => $"{ThreadId}:{TurnId}";
 }

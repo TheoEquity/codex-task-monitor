@@ -37,6 +37,8 @@ public sealed class CodexDataPathsTests
         Assert.Equal(@"C:\Users\Tester\.codex\session_index.jsonl", paths.SessionIndexPath);
         Assert.Equal(@"C:\Users\Tester\.codex\.codex-global-state.json", paths.GlobalStatePath);
         Assert.Equal(@"D:\LocalAppData\CodexTaskMonitor\settings.json", paths.PreferencesPath);
+        Assert.Equal(@"D:\LocalAppData\CodexTaskMonitor\bark-state.json", paths.BarkStatePath);
+        Assert.Equal(@"D:\LocalAppData\CodexTaskMonitor\bark-secret.dat", paths.BarkSecretPath);
         Assert.Equal(@"D:\LocalAppData\CodexTaskMonitor\logs", paths.LogDirectory);
     }
 }

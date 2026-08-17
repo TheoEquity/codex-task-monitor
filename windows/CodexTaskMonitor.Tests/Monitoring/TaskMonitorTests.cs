@@ -14,10 +14,33 @@ public sealed class TaskMonitorTests
         {
             var monitor = new TaskMonitor(new FakeThreadStore(Record("thread-1", path)));
 
-            Assert.Equal(TaskState.Running, (await monitor.ScanAsync(Options(), default)).Items.Single().State);
+            var running = (await monitor.ScanAsync(Options(), default)).Items.Single();
+            Assert.Equal(TaskState.Running, running.State);
+            Assert.Null(running.TerminalKind);
             await File.AppendAllTextAsync(path, Completed("turn-1", 101, 102));
 
-            Assert.Equal(TaskState.Waiting, (await monitor.ScanAsync(Options(), default)).Items.Single().State);
+            var completed = (await monitor.ScanAsync(Options(), default)).Items.Single();
+            Assert.Equal(TaskState.Waiting, completed.State);
+            Assert.Equal(TaskTerminalKind.Completed, completed.TerminalKind);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task AbortedLifecycle_PreservesAbortedTerminalKind()
+    {
+        var path = await WriteTemporaryRolloutAsync(Started("turn-1", 101) + Aborted("turn-1", 101, 102));
+        try
+        {
+            var monitor = new TaskMonitor(new FakeThreadStore(Record("thread-1", path)));
+
+            var item = (await monitor.ScanAsync(Options(), default)).Items.Single();
+
+            Assert.Equal(TaskState.Waiting, item.State);
+            Assert.Equal(TaskTerminalKind.Aborted, item.TerminalKind);
         }
         finally
         {
@@ -305,6 +328,9 @@ public sealed class TaskMonitorTests
 
     private static string Completed(string turnId, long startedAt, long completedAt) =>
         "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"" + turnId + "\",\"started_at\":" + startedAt + ",\"completed_at\":" + completedAt + "}}\n";
+
+    private static string Aborted(string turnId, long startedAt, long completedAt) =>
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"" + turnId + "\",\"started_at\":" + startedAt + ",\"completed_at\":" + completedAt + "}}\n";
 
     private static string SameLengthRollout(string lifecycleLine, long length)
     {

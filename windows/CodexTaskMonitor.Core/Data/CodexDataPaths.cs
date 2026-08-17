@@ -5,6 +5,8 @@ public sealed record CodexDataPaths(
     string SessionIndexPath,
     string GlobalStatePath,
     string PreferencesPath,
+    string BarkStatePath,
+    string BarkSecretPath,
     string LogDirectory)
 {
     public static CodexDataPaths ForHome(string homeDirectory, string localAppDataDirectory)
@@ -19,6 +21,8 @@ public sealed record CodexDataPaths(
             Path.Combine(codex, "session_index.jsonl"),
             Path.Combine(codex, ".codex-global-state.json"),
             Path.Combine(app, "settings.json"),
+            Path.Combine(app, "bark-state.json"),
+            Path.Combine(app, "bark-secret.dat"),
             Path.Combine(app, "logs"));
     }
 }
