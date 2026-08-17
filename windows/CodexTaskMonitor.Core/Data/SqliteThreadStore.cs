@@ -29,7 +29,10 @@ public sealed class SqliteThreadStore(string databasePath) : IThreadStore, IThre
                 LEFT JOIN thread_sections s ON s.id = t.thread_section_id
                 WHERE t.archived = 0
                   AND t.preview <> ''
-                  AND (COALESCE(t.thread_source, 'user') <> 'subagent' OR t.source = 'vscode')
+                  AND (
+                        COALESCE(t.thread_source, 'user') = 'user'
+                        OR (t.thread_source = 'subagent' AND t.source = 'vscode')
+                      )
                   AND t.updated_at_ms >= $updatedAfter
                 ORDER BY t.updated_at_ms DESC;
                 """;

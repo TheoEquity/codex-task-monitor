@@ -6,18 +6,19 @@ namespace CodexTaskMonitor.Tests.Data;
 public sealed class SqliteThreadStoreTests
 {
     [Fact]
-    public async Task ReadThreads_ReturnsOnlyVisibleUserThreadsAndCodexCreatedVisibleThreads()
+    public async Task ReadThreads_ReturnsUserAndVisibleForkThreadsOnly()
     {
         await using var fixture = await CodexFixture.CreateAsync();
-        await fixture.InsertThreadAsync("visible", "Visible", "user", "vscode", archived: false, preview: "hello");
-        await fixture.InsertThreadAsync("codex-created", "Codex", "subagent", "vscode", archived: false, preview: "hello");
+        await fixture.InsertThreadAsync("user", "User", "user", "vscode", archived: false, preview: "hello");
+        await fixture.InsertThreadAsync("visible-fork", "Fork", "subagent", "vscode", archived: false, preview: "hello");
         await fixture.InsertThreadAsync("internal", "Internal", "subagent", "{\"subagent\":{}}", archived: false, preview: "hello");
+        await fixture.InsertThreadAsync("unknown", "Unknown", "automation", "vscode", archived: false, preview: "hello");
         await fixture.InsertThreadAsync("archived", "Archived", "user", "vscode", archived: true, preview: "hello");
         await fixture.InsertThreadAsync("empty", "Empty", "user", "vscode", archived: false, preview: "");
 
         var records = await new SqliteThreadStore(fixture.DatabasePath).ReadThreadsAsync(DateTimeOffset.UnixEpoch, default);
 
-        Assert.Equal(["codex-created", "visible"], records.Select(record => record.Id).Order().ToArray());
+        Assert.Equal(["user", "visible-fork"], records.Select(record => record.Id).Order().ToArray());
     }
 
     [Fact]
