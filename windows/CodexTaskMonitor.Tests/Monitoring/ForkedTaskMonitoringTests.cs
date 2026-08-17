@@ -30,6 +30,32 @@ public sealed class ForkedTaskMonitoringTests
     }
 
     [Fact]
+    public async Task AbortedVisibleForkWithRootTimestamp_DoesNotBlockNormalTasks()
+    {
+        await using var fixture = await CodexFixture.CreateAsync();
+        var userRollout = await WriteRolloutAsync(
+            fixture, "user", LifecycleLine("task_started", "user-turn"));
+        var forkRollout = await WriteRolloutAsync(
+            fixture,
+            "fork-aborted",
+            "{\"type\":\"event_msg\",\"timestamp\":\"1970-01-01T00:01:42Z\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"fork-turn\",\"started_at\":101,\"reason\":\"interrupted\"}}\n");
+        await fixture.InsertThreadAsync(
+            "user-thread", "Normal", "user", "vscode",
+            archived: false, preview: "visible", rolloutPath: userRollout);
+        await fixture.InsertThreadAsync(
+            "fork-thread", "Fork", "subagent", "vscode",
+            archived: false, preview: "visible", rolloutPath: forkRollout);
+        var monitor = new TaskMonitor(new SqliteThreadStore(fixture.DatabasePath));
+
+        var result = await monitor.ScanAsync(Options(), default);
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Contains(result.Items, item => item.Id == "user-thread:user-turn" && item.State == TaskState.Running);
+        Assert.Contains(result.Items, item => item.Id == "fork-thread:fork-turn" && item.State == TaskState.Waiting);
+        Assert.Equal(0, result.UnreadableRolloutCount);
+    }
+
+    [Fact]
     public async Task DismissingParent_DoesNotHideForkWithSameTitleAndTurnId()
     {
         await using var fixture = await CodexFixture.CreateAsync();

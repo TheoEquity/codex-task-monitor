@@ -23,6 +23,52 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void AbortedTurnWithoutCompletedAt_UsesRootTimestamp()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-16T12:34:56.789Z\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n");
+
+        var item = RolloutParser.LatestAfter(null, data);
+
+        Assert.Equal(LifecycleKind.Aborted, item!.Kind);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-16T12:34:56.789Z"), item.CompletedAt);
+    }
+
+    [Fact]
+    public void AbortedTurnWithCompletedAt_PrefersPayloadTimestamp()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-16T12:34:56.789Z\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"turn-a\",\"started_at\":101,\"completed_at\":102}}\n");
+
+        var item = RolloutParser.LatestAfter(null, data);
+
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(102), item!.CompletedAt);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n")]
+    [InlineData("{\"type\":\"event_msg\",\"timestamp\":\"not-a-timestamp\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n")]
+    [InlineData("{\"type\":\"event_msg\",\"timestamp\":\"2026-08-16T12:34:56.789Z\",\"payload\":{\"type\":\"turn_aborted\",\"turn_id\":\"turn-a\",\"started_at\":101,\"completed_at\":\"invalid\"}}\n")]
+    public void AbortedTurnWithoutValidTerminalTimestamp_ReportsFormatChange(string json)
+    {
+        var error = Assert.Throws<CodexDataException>(
+            () => RolloutParser.LatestAfter(null, Encoding.UTF8.GetBytes(json)));
+
+        Assert.Equal(CodexDataError.FormatChanged, error.Error);
+    }
+
+    [Fact]
+    public void CompletedTurnWithoutCompletedAt_DoesNotUseRootTimestamp()
+    {
+        var data = Encoding.UTF8.GetBytes(
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-16T12:34:56.789Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-a\",\"started_at\":101}}\n");
+
+        var error = Assert.Throws<CodexDataException>(() => RolloutParser.LatestAfter(null, data));
+
+        Assert.Equal(CodexDataError.FormatChanged, error.Error);
+    }
+
+    [Fact]
     public void IncompleteTrailingJson_IsIgnored()
     {
         var data = Encoding.UTF8.GetBytes(

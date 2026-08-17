@@ -127,12 +127,11 @@ public static class RolloutParser
             if (kind == LifecycleKind.Started)
                 return new LifecycleEvent(kind.Value, turnId, startedAt, null);
 
-            var completed = payload.GetProperty("completed_at").GetDouble();
             var terminal = new LifecycleEvent(
                 kind.Value,
                 turnId,
                 startedAt,
-                DateTimeOffset.FromUnixTimeMilliseconds((long)(completed * 1000)));
+                TerminalAt(root, payload, kind.Value));
             return current is null || current.TurnId == turnId ? terminal : current;
         }
         catch (JsonException) when (!HasMalformedLifecycleEnvelope(line))
@@ -143,6 +142,26 @@ public static class RolloutParser
         {
             throw FormatChanged(error);
         }
+    }
+
+    private static DateTimeOffset TerminalAt(
+        JsonElement root,
+        JsonElement payload,
+        LifecycleKind kind)
+    {
+        if (payload.TryGetProperty("completed_at", out var completedElement))
+        {
+            var completed = completedElement.GetDouble();
+            return DateTimeOffset.FromUnixTimeMilliseconds((long)(completed * 1000));
+        }
+
+        if (kind == LifecycleKind.Aborted &&
+            root.TryGetProperty("timestamp", out var timestampElement) &&
+            timestampElement.ValueKind == JsonValueKind.String &&
+            timestampElement.TryGetDateTimeOffset(out var timestamp))
+            return timestamp;
+
+        throw new InvalidOperationException("terminal timestamp is missing");
     }
 
     private static CodexDataException FormatChanged(Exception error) =>
