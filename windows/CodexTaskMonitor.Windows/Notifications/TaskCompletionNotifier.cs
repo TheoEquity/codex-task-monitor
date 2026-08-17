@@ -167,6 +167,8 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
             foreach (var stale in retries.Keys.Where(id => !visibleIds.Contains(id) || removedIds.Contains(id)).ToArray())
                 retries.Remove(stale);
         }
+        if (!HasPendingRetries() && currentWarning == SendFailureWarning)
+            SetWarning(null);
 
         foreach (var item in snapshot)
         {
@@ -203,7 +205,8 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
                 if (committed)
                 {
                     state = state.MarkNotified(item.Id);
-                    SetWarning(null);
+                    if (!HasPendingRetries())
+                        SetWarning(null);
                     await WriteDiagnosticAsync("bark-send-ok", duration, token).ConfigureAwait(false);
                 }
             }
@@ -267,6 +270,12 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
     {
         lock (sync)
             retries.Clear();
+    }
+
+    private bool HasPendingRetries()
+    {
+        lock (sync)
+            return retries.Count > 0;
     }
 
     private void SetWarning(string? warning)

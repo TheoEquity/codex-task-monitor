@@ -73,6 +73,32 @@ public sealed class TaskCompletionNotifierTests
     }
 
     [Fact]
+    public async Task LaterSuccess_DoesNotClearWarningWhileAnotherItemIsWaitingToRetry()
+    {
+        await using var fixture = await NotifierFixture.CreateWithRetryDelayAsync(
+            TimeSpan.FromSeconds(5),
+            BarkSendResult.Failure(BarkSendError.Network),
+            BarkSendResult.Success);
+        var warnings = new List<string?>();
+        fixture.Notifier.WarningChanged += (_, warning) =>
+        {
+            lock (warnings)
+                warnings.Add(warning);
+        };
+
+        fixture.Notifier.Observe([
+            Item(TaskTerminalKind.Completed, fixture.EnabledAt.AddSeconds(1), "thread-a", "turn-a"),
+            Item(TaskTerminalKind.Completed, fixture.EnabledAt.AddSeconds(2), "thread-b", "turn-b")
+        ]);
+        await fixture.Client.WaitForCallsAsync(2);
+        await EventuallyAsync(async () =>
+            (await fixture.StateStore.LoadAsync(default)).NotifiedItemIds.Count == 1);
+
+        lock (warnings)
+            Assert.Equal("Bark 通知发送失败，将自动重试", warnings.Last());
+    }
+
+    [Fact]
     public async Task RemoveAfterFailure_CancelsRetry()
     {
         await using var fixture = await NotifierFixture.CreateAsync(
@@ -88,8 +114,42 @@ public sealed class TaskCompletionNotifierTests
         Assert.Single(fixture.Client.Notifications);
     }
 
-    private static MonitorItem Item(TaskTerminalKind terminalKind, DateTimeOffset eventDate) =>
-        new("thread", "turn", "Task title", @"C:\Project", "Project", eventDate, TaskState.Waiting, terminalKind);
+    [Fact]
+    public async Task RemoveLastFailedItem_ClearsRetryWarning()
+    {
+        await using var fixture = await NotifierFixture.CreateWithRetryDelayAsync(
+            TimeSpan.FromSeconds(5),
+            BarkSendResult.Failure(BarkSendError.Network));
+        var failureWarning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clearedWarning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sawFailure = false;
+        fixture.Notifier.WarningChanged += (_, warning) =>
+        {
+            if (warning == "Bark 通知发送失败，将自动重试")
+            {
+                sawFailure = true;
+                failureWarning.TrySetResult();
+            }
+            else if (warning is null && sawFailure)
+            {
+                clearedWarning.TrySetResult();
+            }
+        };
+        var item = Item(TaskTerminalKind.Completed, fixture.EnabledAt.AddSeconds(1));
+
+        fixture.Notifier.Observe([item]);
+        await failureWarning.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        fixture.Notifier.Remove(item.Id);
+
+        await clearedWarning.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    private static MonitorItem Item(
+        TaskTerminalKind terminalKind,
+        DateTimeOffset eventDate,
+        string threadId = "thread",
+        string turnId = "turn") =>
+        new(threadId, turnId, "Task title", @"C:\Project", "Project", eventDate, TaskState.Waiting, terminalKind);
 
     private static async Task EventuallyAsync(Func<Task<bool>> condition)
     {
@@ -123,6 +183,13 @@ public sealed class TaskCompletionNotifierTests
 
         public static async Task<NotifierFixture> CreateAsync(params BarkSendResult[] results)
         {
+            return await CreateWithRetryDelayAsync(TimeSpan.FromMilliseconds(20), results);
+        }
+
+        public static async Task<NotifierFixture> CreateWithRetryDelayAsync(
+            TimeSpan initialRetryDelay,
+            params BarkSendResult[] results)
+        {
             var directory = Path.Combine(Path.GetTempPath(), $"bark-notifier-{Guid.NewGuid():N}");
             var stateStore = new BarkStateStore(Path.Combine(directory, "state.json"));
             var configurationId = Guid.NewGuid();
@@ -135,8 +202,8 @@ public sealed class TaskCompletionNotifierTests
                 client,
                 new NullDiagnostics(),
                 TimeProvider.System,
-                initialRetryDelay: TimeSpan.FromMilliseconds(20),
-                maxRetryDelay: TimeSpan.FromMilliseconds(40));
+                initialRetryDelay: initialRetryDelay,
+                maxRetryDelay: initialRetryDelay + initialRetryDelay);
             return new NotifierFixture(directory, enabledAt, stateStore, client, notifier);
         }
 
