@@ -50,8 +50,8 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
 | --- | --- |
 | Windows build | 26200 |
 | Codex/ChatGPT package version | 151.0.7922.76 |
-| Installer SHA-256 | E98D412812D046CBF1CCA930452BCD91D4ECCC5677F61875C7E4C641CFE173CE |
-| Test commit SHA | c2f9cca420ef76fd407ab2ce59333608020d7dee |
+| Installer SHA-256 | D51D9EACA2937003B59A82297676D9566AEF50A9BD3901E8CB67A33195C8511C |
+| Test commit SHA | f206cd8ad3583b8f9484149ddd4701a0ba51d8e1 |
 | Pass date | 2026-08-16 |
 
 ## Automated current-machine evidence
@@ -66,7 +66,8 @@ unchecked visual, click, Codex-interaction, reboot, or login acceptance item abo
 | HKCU Run value inspection | The fixed `CodexTaskMonitor` value was present after install, upgrade, and reinstall, and absent after uninstall. |
 | Installed files inspection | Installed executable existed after install, upgrade, and reinstall; the installation directory was absent after uninstall. |
 | Title-bar blank-area hit test | The compiled WPF title bar resolves a blank point to the title-bar `Grid`; removing its transparent background makes the regression test fail. Real pointer dragging remains a manual interaction check. |
-| Visible Fork automated regression | Release tests passed 179/179. A real temporary SQLite database and JSONL rollout verified that `subagent/vscode` Forks produce normal running, completed, and aborted panel states; an aborted Fork without `payload.completed_at` uses its valid outer ISO-8601 `timestamp` without blocking a coexisting normal task; internal JSON subagents and unknown sources remain excluded; exact parent handled keys do not hide Forks. |
+| Visible Fork automated regression | Release tests passed 180/180. A real temporary SQLite database and JSONL rollout verified that `subagent/vscode` Forks produce normal running, completed, and aborted panel states; an aborted Fork without `payload.completed_at` uses its valid outer ISO-8601 `timestamp` without blocking a coexisting normal task; internal JSON subagents and unknown sources remain excluded; exact parent handled keys do not hide Forks. |
 | Privacy-safe production scan | The fixed Release production assemblies scanned current local data successfully and returned 6 panel items: 3 running, 3 waiting, and 0 unreadable. Only fixed status and counts were emitted. |
-| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,238,743 bytes, unsigned, and was validated with its recorded SHA-256. |
+| Fixed-width task-row layout | A synthetic 200-character title pushed the old dismiss-button right edge to 2,729.5 DIP in a 330-DIP list. The fixed STA WPF layout test verifies horizontal scrolling is disabled, the single-line title is ellipsized before the button, and the visible button remains inside the task row. Real visual confirmation remains manual. |
+| Final installer generation | The installer above was rebuilt once from the recorded commit with Inno Setup 7.1.0; it is 50,262,158 bytes, unsigned, and was validated with its recorded SHA-256. |
 | Final per-user upgrade | The final installer completed a silent same-version per-user upgrade with exit code 0. The installed executable and fixed `CodexTaskMonitor` HKCU Run value exist. One monitor process remained running at both 5-second and 20-second checks. |
