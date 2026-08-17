@@ -5,6 +5,7 @@ using CodexTaskMonitor.Core;
 using CodexTaskMonitor.Core.Data;
 using CodexTaskMonitor.Core.Monitoring;
 using CodexTaskMonitor.Core.Preferences;
+using CodexTaskMonitor.Windows.Notifications;
 
 namespace CodexTaskMonitor.Windows.ViewModels;
 
@@ -26,7 +27,9 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly IThreadActivationService activation;
     private readonly IStartupRegistration startup;
     private readonly ICodexLaunchTimeProvider launchTime;
+    private readonly ITaskCompletionNotifier notifier;
     private readonly TimeProvider time;
+    private readonly SynchronizationContext? uiContext;
     private readonly IMonitorViewModelCommitHook? commitHook;
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private readonly SemaphoreSlim preferenceMutationGate = new(1, 1);
@@ -41,6 +44,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private Task? disposal;
     private string? actionErrorMessage;
     private string? scanErrorMessage;
+    private string? barkErrorMessage;
     private long refreshGeneration;
     private bool disposing;
     private TimeSpan nextPollDelay = NormalPollDelay;
@@ -52,7 +56,19 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         IStartupRegistration startup,
         ICodexLaunchTimeProvider launchTime,
         TimeProvider time)
-        : this(monitor, preferenceStore, activation, startup, launchTime, time, null)
+        : this(monitor, preferenceStore, activation, startup, launchTime, time, NullTaskCompletionNotifier.Instance, null)
+    {
+    }
+
+    public MonitorViewModel(
+        ITaskMonitor monitor,
+        IMonitorPreferencesStore preferenceStore,
+        IThreadActivationService activation,
+        IStartupRegistration startup,
+        ICodexLaunchTimeProvider launchTime,
+        TimeProvider time,
+        ITaskCompletionNotifier notifier)
+        : this(monitor, preferenceStore, activation, startup, launchTime, time, notifier, null)
     {
     }
 
@@ -64,22 +80,38 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         ICodexLaunchTimeProvider launchTime,
         TimeProvider time,
         IMonitorViewModelCommitHook? commitHook)
+        : this(monitor, preferenceStore, activation, startup, launchTime, time, NullTaskCompletionNotifier.Instance, commitHook)
+    {
+    }
+
+    internal MonitorViewModel(
+        ITaskMonitor monitor,
+        IMonitorPreferencesStore preferenceStore,
+        IThreadActivationService activation,
+        IStartupRegistration startup,
+        ICodexLaunchTimeProvider launchTime,
+        TimeProvider time,
+        ITaskCompletionNotifier notifier,
+        IMonitorViewModelCommitHook? commitHook)
     {
         this.monitor = monitor;
         this.preferenceStore = preferenceStore;
         this.activation = activation;
         this.startup = startup;
         this.launchTime = launchTime;
+        this.notifier = notifier;
         this.time = time;
+        uiContext = SynchronizationContext.Current;
         this.commitHook = commitHook;
         firstAttemptBaseline = DateTimeOffset.FromUnixTimeSeconds(time.GetUtcNow().ToUnixTimeSeconds());
         RefreshCommand = new AsyncCommand(() => RefreshAsync(lifetime.Token), onError: ReportActionFailure);
         ToggleStartupCommand = new AsyncCommand(() => ToggleStartupAsync(lifetime.Token), onError: ReportActionFailure);
         QuitCommand = new AsyncCommand(() => { QuitRequested?.Invoke(this, EventArgs.Empty); return Task.CompletedTask; }, onError: ReportActionFailure);
+        notifier.WarningChanged += OnBarkWarningChanged;
     }
 
     public ObservableCollection<MonitorItemViewModel> Items { get; } = [];
-    public string? ErrorMessage => actionErrorMessage ?? scanErrorMessage;
+    public string? ErrorMessage => actionErrorMessage ?? scanErrorMessage ?? barkErrorMessage;
     public bool HasError => ErrorMessage is not null;
     public double PanelHeight => MonitorPanelLayout.Height(Items.Count, HasError);
     public double? SavedWindowLeft => preferences.WindowLeft;
@@ -136,6 +168,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
             await MutatePreferencesAsync(current => current.Dismiss(item.Id), token);
+            notifier.Remove(item.Id);
             await RefreshAsync(token);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -243,8 +276,12 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 nextPollDelay = NormalPollDelay;
                 SetScanError(result.UnreadableRolloutCount == 0 ? null : $"{result.UnreadableRolloutCount} 个任务暂时无法读取");
             });
-            if (applied && insertedId is not null)
-                ItemInserted?.Invoke(this, insertedId);
+            if (applied)
+            {
+                notifier.Observe(result.Items);
+                if (insertedId is not null)
+                    ItemInserted?.Invoke(this, insertedId);
+            }
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception error)
@@ -383,6 +420,30 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         RaiseErrorProperties();
     }
 
+    private void OnBarkWarningChanged(object? sender, string? value)
+    {
+        if (uiContext is null || SynchronizationContext.Current == uiContext)
+        {
+            SetBarkError(value);
+            return;
+        }
+
+        uiContext.Post(static state =>
+        {
+            var (model, warning) = ((MonitorViewModel Model, string? Warning))state!;
+            model.SetBarkError(warning);
+        }, (this, value));
+    }
+
+    private void SetBarkError(string? value)
+    {
+        if (barkErrorMessage == value)
+            return;
+
+        barkErrorMessage = value;
+        RaiseErrorProperties();
+    }
+
     private void RaiseErrorProperties()
     {
         OnPropertyChanged(nameof(ErrorMessage));
@@ -432,6 +493,8 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             await AwaitWithoutFailureAsync(poll);
             await AwaitWithoutFailureAsync(Task.WhenAll(refreshes));
+            notifier.WarningChanged -= OnBarkWarningChanged;
+            await notifier.DisposeAsync().ConfigureAwait(false);
             await preferenceMutationGate.WaitAsync().ConfigureAwait(false);
             preferenceMutationGate.Release();
             lifetime.Dispose();
@@ -456,5 +519,26 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     private sealed record RefreshScope(long Generation, CancellationTokenSource Source)
     {
         public CancellationToken Token => Source.Token;
+    }
+
+    private sealed class NullTaskCompletionNotifier : ITaskCompletionNotifier
+    {
+        public static NullTaskCompletionNotifier Instance { get; } = new();
+
+        public event EventHandler<string?>? WarningChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public void Observe(IReadOnlyList<MonitorItem> items)
+        {
+        }
+
+        public void Remove(string itemId)
+        {
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

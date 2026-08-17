@@ -20,7 +20,11 @@ public sealed class LocalDiagnostics : ILocalDiagnostics
         "deep-link-failed",
         "reveal-ok",
         "reveal-warning",
-        "reveal-error"
+        "reveal-error",
+        "bark-send-ok",
+        "bark-send-failure",
+        "bark-state-failure",
+        "bark-secret-failure"
     };
 
     private readonly string directory;

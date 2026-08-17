@@ -1,9 +1,11 @@
+using System.Net.Http;
 using System.Windows;
 using CodexTaskMonitor.Core.Data;
 using CodexTaskMonitor.Core.Monitoring;
 using CodexTaskMonitor.Core.Preferences;
 using CodexTaskMonitor.Windows.Automation;
 using CodexTaskMonitor.Windows.Interop;
+using CodexTaskMonitor.Windows.Notifications;
 using CodexTaskMonitor.Windows.Services;
 using CodexTaskMonitor.Windows.ViewModels;
 
@@ -13,6 +15,7 @@ public partial class App : Application
 {
     private ThreadActivationService? activation;
     private bool activationPending;
+    private HttpClient? barkHttp;
     private MonitorViewModel? model;
     private SingleInstanceService? singleInstance;
 
@@ -37,6 +40,13 @@ public partial class App : Application
         var monitor = new TaskMonitor(threads);
         var preferences = new MonitorPreferencesStore(paths.PreferencesPath);
         var diagnostics = new LocalDiagnostics(paths.LogDirectory);
+        barkHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var notifier = new TaskCompletionNotifier(
+            new BarkStateStore(paths.BarkStatePath),
+            new BarkSecretStore(paths.BarkSecretPath),
+            new BarkNotificationClient(barkHttp),
+            diagnostics,
+            TimeProvider.System);
         var snapshots = new UiAutomationSnapshotProvider();
         var scroll = new SidebarScrollController(
             snapshots,
@@ -63,7 +73,8 @@ public partial class App : Application
             activation,
             startup,
             new CodexLaunchTimeProvider(),
-            TimeProvider.System);
+            TimeProvider.System,
+            notifier);
 
         var window = new MainWindow { DataContext = model };
         MainWindow = window;
@@ -86,6 +97,7 @@ public partial class App : Application
 
         if (activation is not null)
             await activation.DisposeAsync();
+        barkHttp?.Dispose();
         if (singleInstance is not null)
             singleInstance.ActivationRequested -= OnActivationRequested;
         singleInstance?.Dispose();

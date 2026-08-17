@@ -176,6 +176,38 @@ public sealed class WindowsServicesTests
         }
     }
 
+    [Fact]
+    public async Task Diagnostics_AllowsOnlyPrivacySafeBarkCategories()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}");
+        try
+        {
+            var log = new LocalDiagnostics(root);
+            var categories = new[]
+            {
+                "bark-send-ok",
+                "bark-send-failure",
+                "bark-state-failure",
+                "bark-secret-failure"
+            };
+            foreach (var category in categories)
+                await log.WriteAsync(category, TimeSpan.Zero, 1, default);
+            await log.WriteAsync("bark-title=private-key=private", TimeSpan.Zero, 1, default);
+
+            var lines = await File.ReadAllLinesAsync(Path.Combine(root, "monitor.log"));
+
+            foreach (var category in categories)
+                Assert.Contains(lines, line => line.Contains($"\"category\":\"{category}\"", StringComparison.Ordinal));
+            Assert.Contains(lines, line => line.Contains("\"category\":\"other\"", StringComparison.Ordinal));
+            Assert.DoesNotContain("private", string.Concat(lines), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class FakeRunValueStore : IRunValueStore
     {
         public string? Value { get; private set; }
