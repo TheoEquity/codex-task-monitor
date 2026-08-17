@@ -32,6 +32,9 @@ jobs:
         run: dotnet restore windows/CodexTaskMonitor.sln
       - name: Test
         run: dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"
+      - name: Test Bark provisioning
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/tests/provision_bark.tests.ps1
       - name: Publish self-contained app
         run: dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64
       - name: Install Inno Setup 7

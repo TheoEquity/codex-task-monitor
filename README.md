@@ -61,7 +61,12 @@ There is no in-app Bark settings screen. Provision the current Windows account o
 1. Exit Codex Task Monitor.
 2. Copy a complete sample URL from Bark on the iPhone, such as its `Body Text` sample, to the
    Windows clipboard.
-3. Run `pwsh -NoProfile -File windows/Scripts/provision_bark.ps1` from the repository root.
+3. Run the script installed with the app using Windows PowerShell 5.1, which is included with
+   Windows 11:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Codex Task Monitor\Scripts\provision_bark.ps1"
+   ```
 
 The script sends a fixed test notification before saving anything. On success it stores only an
 encrypted endpoint in `%LOCALAPPDATA%\CodexTaskMonitor\bark-secret.dat` using Windows DPAPI
@@ -71,6 +76,8 @@ URL or accepts it as a command-line argument.
 Normal completion notifications use the task title as the notification title and the project name
 as the body. Aborted tasks append `· 已中止` to the body. Successfully delivered task identities
 are retained locally to prevent duplicate pushes across polling and restarts.
+Delivery is at-least-once: if Bark accepts a notification but Windows cannot persist its identity,
+the current process suppresses another send, but a later app restart may send it again.
 
 ### Privacy and compatibility
 

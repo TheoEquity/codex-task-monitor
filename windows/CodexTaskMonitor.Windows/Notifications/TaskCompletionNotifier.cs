@@ -28,12 +28,14 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
     private readonly CancellationTokenSource lifetime = new();
     private readonly object sync = new();
     private readonly Dictionary<string, RetryState> retries = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CancellationTokenSource> activeAttempts = new(StringComparer.Ordinal);
     private readonly HashSet<string> removedIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> sentInMemory = new(StringComparer.Ordinal);
     private IReadOnlyList<MonitorItem> latestSnapshot = [];
     private readonly Task worker;
     private Task? disposal;
     private Guid activeConfigurationId;
+    private RetryState? infrastructureRetry;
     private string? currentWarning;
     private bool disposing;
 
@@ -63,18 +65,26 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
     public void Observe(IReadOnlyList<MonitorItem> items)
     {
         ArgumentNullException.ThrowIfNull(items);
+        CancellationTokenSource[] attemptsToCancel;
         lock (sync)
         {
             if (disposing)
                 return;
             latestSnapshot = items.ToArray();
+            var visibleIds = latestSnapshot.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+            attemptsToCancel = activeAttempts
+                .Where(attempt => !visibleIds.Contains(attempt.Key))
+                .Select(attempt => attempt.Value)
+                .ToArray();
             signal.Release();
         }
+        CancelAttempts(attemptsToCancel);
     }
 
     public void Remove(string itemId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(itemId);
+        CancellationTokenSource? attemptToCancel = null;
         lock (sync)
         {
             if (disposing)
@@ -82,8 +92,10 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
             removedIds.Add(itemId);
             retries.Remove(itemId);
             latestSnapshot = latestSnapshot.Where(item => item.Id != itemId).ToArray();
+            activeAttempts.TryGetValue(itemId, out attemptToCancel);
             signal.Release();
         }
+        CancelAttempts(attemptToCancel is null ? [] : [attemptToCancel]);
     }
 
     private async Task RunAsync(CancellationToken token)
@@ -97,6 +109,8 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
                 while (signal.Wait(0))
                 {
                 }
+                if (!InfrastructureRetryIsDue())
+                    continue;
 
                 try
                 {
@@ -108,6 +122,7 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
                 }
                 catch
                 {
+                    ScheduleInfrastructureRetry();
                     SetWarning(ConfigurationWarning);
                     await WriteDiagnosticAsync("bark-state-failure", TimeSpan.Zero, token).ConfigureAwait(false);
                 }
@@ -122,6 +137,15 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
     {
         lock (sync)
         {
+            if (infrastructureRetry is not null)
+            {
+                var infrastructureWait = infrastructureRetry.NextAttemptAt - time.GetUtcNow();
+                if (infrastructureWait > TimeSpan.Zero)
+                    return infrastructureWait;
+                if (retries.Count == 0)
+                    return TimeSpan.Zero;
+            }
+
             if (retries.Count == 0)
                 return Timeout.InfiniteTimeSpan;
 
@@ -143,6 +167,7 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
 
         var state = await stateStore.LoadAsync(token).ConfigureAwait(false);
         var secret = await secretStore.LoadAsync(token).ConfigureAwait(false);
+        ClearInfrastructureRetry();
         SwitchConfiguration(state.ConfigurationId);
 
         if (!state.Enabled)
@@ -186,8 +211,24 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
                     ? $"{item.ProjectName} · 已中止"
                     : item.ProjectName,
                 "Codex Task Monitor");
+            var attempt = TryBeginAttempt(item.Id, token);
+            if (attempt is null)
+                continue;
+
             var started = Stopwatch.GetTimestamp();
-            var result = await client.SendAsync(secret.Endpoint, notification, token).ConfigureAwait(false);
+            BarkSendResult result;
+            try
+            {
+                result = await client.SendAsync(secret.Endpoint, notification, attempt.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (attempt.IsCancellationRequested && !token.IsCancellationRequested)
+            {
+                continue;
+            }
+            finally
+            {
+                EndAttempt(item.Id, attempt);
+            }
             var duration = Stopwatch.GetElapsedTime(started);
             if (!result.Succeeded)
             {
@@ -246,15 +287,84 @@ public sealed class TaskCompletionNotifier : ITaskCompletionNotifier
             return !retries.TryGetValue(itemId, out var retry) || retry.NextAttemptAt <= time.GetUtcNow();
     }
 
+    private CancellationTokenSource? TryBeginAttempt(string itemId, CancellationToken token)
+    {
+        lock (sync)
+        {
+            if (disposing || removedIds.Contains(itemId) || latestSnapshot.All(item => item.Id != itemId))
+                return null;
+
+            var attempt = CancellationTokenSource.CreateLinkedTokenSource(token);
+            activeAttempts[itemId] = attempt;
+            return attempt;
+        }
+    }
+
+    private void EndAttempt(string itemId, CancellationTokenSource attempt)
+    {
+        lock (sync)
+        {
+            if (activeAttempts.TryGetValue(itemId, out var current) && ReferenceEquals(current, attempt))
+                activeAttempts.Remove(itemId);
+        }
+        attempt.Dispose();
+    }
+
+    private static void CancelAttempts(IEnumerable<CancellationTokenSource> attempts)
+    {
+        foreach (var attempt in attempts)
+        {
+            try
+            {
+                attempt.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+    }
+
     private void ScheduleRetry(string itemId)
     {
         lock (sync)
         {
             var attempt = retries.TryGetValue(itemId, out var retry) ? retry.Attempt + 1 : 1;
-            var multiplier = Math.Pow(2, Math.Min(attempt - 1, 30));
-            var ticks = Math.Min(maxRetryDelay.Ticks, initialRetryDelay.Ticks * multiplier);
-            retries[itemId] = new RetryState(attempt, time.GetUtcNow().AddTicks((long)ticks));
+            retries[itemId] = new RetryState(attempt, time.GetUtcNow().Add(RetryDelay(attempt)));
         }
+    }
+
+    private void ScheduleInfrastructureRetry()
+    {
+        lock (sync)
+        {
+            var attempt = (infrastructureRetry?.Attempt ?? 0) + 1;
+            infrastructureRetry = new RetryState(attempt, time.GetUtcNow().Add(RetryDelay(attempt)));
+        }
+    }
+
+    private bool InfrastructureRetryIsDue()
+    {
+        lock (sync)
+            return infrastructureRetry is null || infrastructureRetry.NextAttemptAt <= time.GetUtcNow();
+    }
+
+    private void ClearInfrastructureRetry()
+    {
+        lock (sync)
+            infrastructureRetry = null;
+    }
+
+    private TimeSpan RetryDelay(int attempt)
+    {
+        return CalculateRetryDelay(initialRetryDelay, maxRetryDelay, attempt);
+    }
+
+    internal static TimeSpan CalculateRetryDelay(TimeSpan initialDelay, TimeSpan maximumDelay, int attempt)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
+        var multiplier = Math.Pow(2, Math.Min(attempt - 1, 30));
+        var ticks = Math.Min(maximumDelay.Ticks, initialDelay.Ticks * multiplier);
+        return TimeSpan.FromTicks((long)ticks);
     }
 
     private void MarkSentInMemory(string itemId)

@@ -71,7 +71,7 @@ try {
     Assert-True ([IO.File]::Exists($statePath)) 'state file'
     Assert-True ([IO.File]::Exists($secretPath)) 'secret file'
     $stateText = [IO.File]::ReadAllText($statePath)
-    Assert-True (-not $stateText.Contains('fake-device-key', [StringComparison]::Ordinal)) 'state secrecy'
+    Assert-True ($stateText.IndexOf('fake-device-key', [StringComparison]::Ordinal) -lt 0) 'state secrecy'
     $state = $stateText | ConvertFrom-Json
     Assert-True $state.enabled 'enabled state'
     Assert-Equal '0' ([string]$state.notifiedItemIds.Count) 'empty notified ids'
@@ -86,7 +86,7 @@ try {
         Assert-Equal 'https://example.invalid/fake-device-key' $secret.endpoint 'protected endpoint'
     }
     finally {
-        [Security.Cryptography.CryptographicOperations]::ZeroMemory($clearBytes)
+        [Array]::Clear($clearBytes, 0, $clearBytes.Length)
     }
 }
 finally {

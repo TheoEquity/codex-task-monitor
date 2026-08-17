@@ -29,6 +29,7 @@ Name: "startup"; Description: "登录 Windows 时启动"; GroupDescription: "其
 
 [Files]
 Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\Scripts\provision_bark.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

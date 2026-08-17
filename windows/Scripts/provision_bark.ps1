@@ -3,6 +3,7 @@ param([switch]$ImportOnly)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Add-Type -AssemblyName System.Security
 
 function ConvertTo-BarkEndpoint([string]$InputUrl) {
     try {
@@ -77,7 +78,16 @@ function Protect-BarkSecret([Guid]$ConfigurationId, [Uri]$Endpoint) {
         return ,$protectedBytes
     }
     finally {
-        [Security.Cryptography.CryptographicOperations]::ZeroMemory($clearBytes)
+        [Array]::Clear($clearBytes, 0, $clearBytes.Length)
+    }
+}
+
+function Install-BarkFile([string]$TemporaryPath, [string]$DestinationPath) {
+    if ([IO.File]::Exists($DestinationPath)) {
+        [IO.File]::Replace($TemporaryPath, $DestinationPath, $null)
+    }
+    else {
+        [IO.File]::Move($TemporaryPath, $DestinationPath)
     }
 }
 
@@ -131,11 +141,11 @@ function Invoke-BarkProvisioning {
     try {
         [IO.File]::WriteAllBytes($secretTemporary, $protectedSecret)
         Write-BarkState $stateTemporary $configurationId $enabledAt
-        [IO.File]::Move($secretTemporary, $secretPath, $true)
-        [IO.File]::Move($stateTemporary, $statePath, $true)
+        Install-BarkFile $secretTemporary $secretPath
+        Install-BarkFile $stateTemporary $statePath
     }
     finally {
-        [Security.Cryptography.CryptographicOperations]::ZeroMemory($protectedSecret)
+        [Array]::Clear($protectedSecret, 0, $protectedSecret.Length)
         if ([IO.File]::Exists($secretTemporary)) { [IO.File]::Delete($secretTemporary) }
         if ([IO.File]::Exists($stateTemporary)) { [IO.File]::Delete($stateTemporary) }
     }

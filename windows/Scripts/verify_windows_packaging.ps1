@@ -98,6 +98,7 @@ foreach ($expectedValue in @(
     'ArchitecturesAllowed=x64compatible',
     'ArchitecturesInstallIn64BitMode=x64compatible',
     'Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs',
+    'Source: "..\Scripts\provision_bark.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion',
     'Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"',
     'Flags: uninsdeletevalue',
     "RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'CodexTaskMonitor');"
@@ -149,6 +150,7 @@ if ("$cacheValue" -ieq 'true') {
 foreach ($expectedRun in @(
     'dotnet restore windows/CodexTaskMonitor.sln',
     'dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"',
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/tests/provision_bark.tests.ps1',
     'dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64',
     'winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements',
     "& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss"

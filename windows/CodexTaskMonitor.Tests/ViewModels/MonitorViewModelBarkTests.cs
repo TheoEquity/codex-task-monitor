@@ -53,6 +53,42 @@ public sealed class MonitorViewModelBarkTests
         Assert.True(notifier.Disposed);
     }
 
+    [Fact]
+    public async Task NotificationObservation_StaysInsideRefreshGenerationCommitBoundary()
+    {
+        var notifier = new BlockingNotifier();
+        await using var model = new MonitorViewModel(
+            new StaticMonitor(Item()),
+            new MemoryPreferences(new MonitorPreferences(
+                DateTimeOffset.UtcNow.AddHours(-1), [], [], [], null, null, false)),
+            new NullActivation(),
+            new DisabledStartup(),
+            new NoLaunchTime(),
+            TimeProvider.System,
+            notifier,
+            commitHook: null);
+
+        var firstRefresh = model.RefreshAsync(default);
+        await notifier.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var newerRefreshRequest = Task.Factory.StartNew(
+            () => model.RefreshAsync(default),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
+        try
+        {
+            await Task.Delay(100);
+            Assert.False(newerRefreshRequest.IsCompleted);
+        }
+        finally
+        {
+            notifier.Release.Set();
+        }
+
+        await firstRefresh;
+        await await newerRefreshRequest;
+    }
+
     private static MonitorViewModel Model(ITaskMonitor monitor, ITaskCompletionNotifier notifier) =>
         new(
             monitor,
@@ -118,6 +154,29 @@ public sealed class MonitorViewModelBarkTests
         public ValueTask DisposeAsync()
         {
             Disposed = true;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingNotifier : ITaskCompletionNotifier
+    {
+        public event EventHandler<string?>? WarningChanged { add { } remove { } }
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public void Observe(IReadOnlyList<MonitorItem> items)
+        {
+            Started.TrySetResult();
+            Release.Wait(TimeSpan.FromSeconds(2));
+        }
+
+        public void Remove(string itemId)
+        {
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Release.Dispose();
             return ValueTask.CompletedTask;
         }
     }

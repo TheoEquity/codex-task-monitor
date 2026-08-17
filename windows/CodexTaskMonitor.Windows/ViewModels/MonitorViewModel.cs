@@ -275,10 +275,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
                 insertedId = UpdateItems(result.Items);
                 nextPollDelay = NormalPollDelay;
                 SetScanError(result.UnreadableRolloutCount == 0 ? null : $"{result.UnreadableRolloutCount} 个任务暂时无法读取");
+                notifier.Observe(result.Items);
             });
             if (applied)
             {
-                notifier.Observe(result.Items);
                 if (insertedId is not null)
                     ItemInserted?.Invoke(this, insertedId);
             }
