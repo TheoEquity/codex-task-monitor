@@ -5,6 +5,13 @@
         Width="330" Height="{Binding PanelHeight}" MaxHeight="458"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ShowInTaskbar="False" Topmost="True" ResizeMode="NoResize">
+  <Window.Resources>
+    <CollectionViewSource x:Key="TasksByProject" Source="{Binding Items}">
+      <CollectionViewSource.GroupDescriptions>
+        <PropertyGroupDescription PropertyName="ProjectName" />
+      </CollectionViewSource.GroupDescriptions>
+    </CollectionViewSource>
+  </Window.Resources>
   <Border CornerRadius="14" Background="#EE1E242F">
     <Grid>
       <Grid.RowDefinitions>
@@ -30,11 +37,24 @@
           </Button.ContextMenu>
         </Button>
       </Grid>
-      <ListBox x:Name="TaskList" Grid.Row="1" ItemsSource="{Binding Items}" MaxHeight="378"
+      <ListBox x:Name="TaskList" Grid.Row="1" ItemsSource="{Binding Source={StaticResource TasksByProject}}" MaxHeight="378"
                Background="Transparent" BorderThickness="0"
                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                ScrollViewer.VerticalScrollBarVisibility="Auto"
                automation:AutomationProperties.Name="Codex 任务列表">
+        <ListBox.GroupStyle>
+          <GroupStyle>
+            <GroupStyle.HeaderTemplate>
+              <DataTemplate>
+                <Border Height="24" BorderBrush="#14FFFFFF" BorderThickness="0,1,0,0">
+                  <TextBlock Text="{Binding Name}" Margin="14,0" VerticalAlignment="Center"
+                             Foreground="#CBD5E1" FontSize="10.5" FontWeight="SemiBold"
+                             TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                </Border>
+              </DataTemplate>
+            </GroupStyle.HeaderTemplate>
+          </GroupStyle>
+        </ListBox.GroupStyle>
         <ListBox.ItemContainerStyle>
           <Style TargetType="ListBoxItem">
             <Setter Property="Padding" Value="0" /><Setter Property="Margin" Value="0" />

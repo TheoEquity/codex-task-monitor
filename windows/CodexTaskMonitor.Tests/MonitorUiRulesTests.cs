@@ -10,6 +10,16 @@ public sealed class MonitorUiRulesTests
     public void Height_MatchesApprovedLayout(int count, bool error, double expected) =>
         Assert.Equal(expected, MonitorPanelLayout.Height(count, error));
 
+    [Theory]
+    [InlineData(3, 2, false, 285)]
+    [InlineData(8, 4, true, 458)]
+    public void Height_IncludesProjectHeadersUntilTheExistingMaximum(
+        int itemCount,
+        int groupCount,
+        bool error,
+        double expected) =>
+        Assert.Equal(expected, MonitorPanelLayout.Height(itemCount, error, groupCount));
+
     [Fact]
     public void InsertedId_ReturnsOnlyAnUnambiguousAddition()
     {

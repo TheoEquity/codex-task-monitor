@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodexTaskMonitor.Core.Data;
 
 namespace CodexTaskMonitor.Core.Monitoring;
@@ -6,17 +7,31 @@ public sealed class TaskMonitor : ITaskMonitor
 {
     private const int TailReadBufferSize = 64 * 1024;
     private readonly IThreadStore threadStore;
+    private readonly string? globalStatePath;
     private readonly Action<string>? afterSignatureCaptured;
     private readonly Dictionary<string, CacheEntry> cache = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<string, string>? cachedProjectNames;
+    private FileSignature? cachedProjectSignature;
 
     public TaskMonitor(IThreadStore threadStore)
-        : this(threadStore, null)
+        : this(threadStore, null, null)
+    {
+    }
+
+    public TaskMonitor(IThreadStore threadStore, string globalStatePath)
+        : this(threadStore, globalStatePath, null)
     {
     }
 
     internal TaskMonitor(IThreadStore threadStore, Action<string>? afterSignatureCaptured)
+        : this(threadStore, null, afterSignatureCaptured)
+    {
+    }
+
+    private TaskMonitor(IThreadStore threadStore, string? globalStatePath, Action<string>? afterSignatureCaptured)
     {
         this.threadStore = threadStore;
+        this.globalStatePath = globalStatePath;
         this.afterSignatureCaptured = afterSignatureCaptured;
     }
 
@@ -37,8 +52,9 @@ public sealed class TaskMonitor : ITaskMonitor
         var threads = await threadStore.ReadThreadsAsync(options.Baseline.AddHours(-1), cancellationToken);
         EvictCacheEntriesNotReferencedBy(threads);
         var (events, unreadable) = await LatestEventsAsync(threads, cancellationToken);
+        var projectNames = await ReadProjectNamesAsync(cancellationToken);
         var items = events.Values
-            .Select(pair => ToMonitorItem(pair, options))
+            .Select(pair => ToMonitorItem(pair, projectNames, options))
             .OfType<MonitorItem>()
             .OrderByDescending(item => item.EventDate)
             .ToArray();
@@ -46,7 +62,10 @@ public sealed class TaskMonitor : ITaskMonitor
         return new MonitorScanResult(items, unreadable);
     }
 
-    private static MonitorItem? ToMonitorItem(ThreadEvent pair, MonitorScanOptions options)
+    private static MonitorItem? ToMonitorItem(
+        ThreadEvent pair,
+        IReadOnlyDictionary<string, string> projectNames,
+        MonitorScanOptions options)
     {
         var state = TaskStateResolver.Resolve(
             pair.Event,
@@ -56,16 +75,64 @@ public sealed class TaskMonitor : ITaskMonitor
         if (state is null)
             return null;
 
-        var projectName = Path.GetFileName(pair.Thread.Cwd.TrimEnd(Path.DirectorySeparatorChar));
         var item = new MonitorItem(
             pair.Thread.Id,
             pair.Event.TurnId,
             string.IsNullOrEmpty(pair.Thread.Title) ? "New chat" : pair.Thread.Title,
             pair.Thread.Cwd,
-            projectName,
+            projectNames.GetValueOrDefault(pair.Thread.Id) ?? "没项目",
             pair.Event.ActivityDate,
             state.Value);
         return options.DismissedItemIds.Contains(item.Id) ? null : item;
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadProjectNamesAsync(CancellationToken cancellationToken)
+    {
+        if (globalStatePath is null)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            var info = new FileInfo(globalStatePath);
+            info.Refresh();
+            var signature = FileSignature.From(info);
+            if (cachedProjectNames is not null && cachedProjectSignature == signature)
+                return cachedProjectNames;
+
+            var state = await File.ReadAllBytesAsync(globalStatePath, cancellationToken);
+            using var document = JsonDocument.Parse(state);
+            var root = document.RootElement;
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("thread-project-assignments", out var assignments) &&
+                assignments.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("local-projects", out var projects) &&
+                projects.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var assignment in assignments.EnumerateObject())
+                {
+                    if (assignment.Value.ValueKind != JsonValueKind.Object ||
+                        !assignment.Value.TryGetProperty("projectId", out var projectId) ||
+                        projectId.ValueKind != JsonValueKind.String ||
+                        !projects.TryGetProperty(projectId.GetString()!, out var project) ||
+                        project.ValueKind != JsonValueKind.Object ||
+                        !project.TryGetProperty("name", out var name) ||
+                        name.ValueKind != JsonValueKind.String ||
+                        string.IsNullOrWhiteSpace(name.GetString()))
+                        continue;
+
+                    result[assignment.Name] = name.GetString()!;
+                }
+            }
+
+            cachedProjectNames = result;
+            cachedProjectSignature = signature;
+            return result;
+        }
+        catch (Exception error) when (
+            cachedProjectNames is not null &&
+            error is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return cachedProjectNames;
+        }
     }
 
     private async Task<(Dictionary<string, ThreadEvent> Events, int Unreadable)> LatestEventsAsync(
