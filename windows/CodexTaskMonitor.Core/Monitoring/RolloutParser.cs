@@ -119,11 +119,24 @@ public static class RolloutParser
                 return current;
 
             var turnId = payload.GetProperty("turn_id").GetString();
-            var started = payload.GetProperty("started_at").GetDouble();
             if (string.IsNullOrWhiteSpace(turnId))
                 throw new JsonException("turn_id is missing");
 
-            var startedAt = DateTimeOffset.FromUnixTimeMilliseconds((long)(started * 1000));
+            DateTimeOffset startedAt;
+            if (payload.TryGetProperty("started_at", out var startedElement))
+            {
+                var started = startedElement.GetDouble();
+                startedAt = DateTimeOffset.FromUnixTimeMilliseconds((long)(started * 1000));
+            }
+            else if (current is not null && current.TurnId == turnId)
+            {
+                startedAt = current.StartedAt;
+            }
+            else
+            {
+                throw new JsonException("started_at is missing");
+            }
+
             if (kind == LifecycleKind.Started)
                 return new LifecycleEvent(kind.Value, turnId, startedAt, null);
 
