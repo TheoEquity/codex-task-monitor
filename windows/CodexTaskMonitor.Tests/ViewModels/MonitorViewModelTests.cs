@@ -24,6 +24,26 @@ public sealed class MonitorViewModelTests
     }
 
     [Fact]
+    public async Task PanelHeight_IncludesDistinctProjectHeaders()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var monitor = new FakeTaskMonitor(
+            Set(),
+            [
+                new MonitorItem("thread-a", "turn-a", "A", @"C:\work", "项目 A", now, TaskState.Running),
+                new MonitorItem("thread-b", "turn-b", "B", @"C:\work", "项目 A", now.AddSeconds(-1), TaskState.Waiting),
+                new MonitorItem("thread-c", "turn-c", "C", @"C:\work", "没项目", now.AddSeconds(-2), TaskState.Waiting)
+            ]);
+        var preferences = new FakePreferencesStore(
+            new MonitorPreferences(now.AddHours(-1), [], [], [], null, null, true));
+        var viewModel = Create(monitor, preferences);
+
+        await viewModel.StartAsync(startPollingLoop: false, CancellationToken.None);
+
+        Assert.Equal(285, viewModel.PanelHeight);
+    }
+
+    [Fact]
     public async Task ParentAndForkWithSameTitle_AreIndependentNormalPanelItems()
     {
         var parent = new MonitorItem(

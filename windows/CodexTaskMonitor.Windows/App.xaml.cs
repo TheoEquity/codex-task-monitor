@@ -34,7 +34,7 @@ public partial class App : Application
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
         var threads = new SqliteThreadStore(paths.DatabasePath);
-        var monitor = new TaskMonitor(threads);
+        var monitor = new TaskMonitor(threads, paths.GlobalStatePath);
         var preferences = new MonitorPreferencesStore(paths.PreferencesPath);
         var diagnostics = new LocalDiagnostics(paths.LogDirectory);
         var snapshots = new UiAutomationSnapshotProvider();

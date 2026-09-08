@@ -2,10 +2,11 @@ namespace CodexTaskMonitor.Core;
 
 public static class MonitorPanelLayout
 {
-    public static double Height(int itemCount, bool hasError)
+    public static double Height(int itemCount, bool hasError, int groupCount = 0)
     {
-        var rows = Math.Min(Math.Max(itemCount, 0), 6);
-        var dividers = rows > 0 ? rows : 0;
-        return 48 + rows * 62 + dividers + (hasError ? 32 : 0);
+        var items = Math.Max(itemCount, 0);
+        var groups = Math.Min(Math.Max(groupCount, 0), items);
+        var listHeight = Math.Min(items * 63 + groups * 24, 378);
+        return 48 + listHeight + (hasError ? 32 : 0);
     }
 }
