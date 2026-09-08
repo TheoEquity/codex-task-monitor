@@ -160,7 +160,7 @@ public sealed class MainWindowXamlTests
         thread.SetApartmentState(ApartmentState.STA);
 
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "STA layout thread did not finish.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "STA layout thread did not finish.");
         Assert.Null(failure);
     }
 

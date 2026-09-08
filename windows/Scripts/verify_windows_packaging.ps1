@@ -150,10 +150,16 @@ foreach ($expectedRun in @(
     'dotnet restore windows/CodexTaskMonitor.sln',
     'dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"',
     'dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64',
-    'winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements',
-    "& 'C:\Program Files\Inno Setup 7\ISCC.exe' windows/Installer/CodexTaskMonitor.iss"
+    'winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements'
 )) {
     Assert-Condition (@(Find-WorkflowStep $steps 'run' $expectedRun).Count -eq 1) "Workflow is missing the required command: $expectedRun"
+}
+
+$buildInstallerSteps = @(Find-WorkflowStep $steps 'name' 'Build installer')
+Assert-Condition ($buildInstallerSteps.Count -eq 1) 'Workflow must define one Build installer step.'
+$buildInstallerCommand = "$(Get-ObjectProperty $buildInstallerSteps[0] 'run')"
+foreach ($expectedValue in @('$env:ProgramFiles', '${env:ProgramFiles(x86)}', '$env:LOCALAPPDATA', '& $iscc windows/Installer/CodexTaskMonitor.iss')) {
+    Assert-Contains $buildInstallerCommand $expectedValue $workflowPath
 }
 
 $artifactSteps = @(Find-WorkflowStep $steps 'uses' 'actions/upload-artifact@v4')
