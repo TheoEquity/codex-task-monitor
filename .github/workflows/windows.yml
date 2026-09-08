@@ -39,7 +39,15 @@ jobs:
         run: winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements
       - name: Build installer
         shell: pwsh
-        run: '& ''C:\Program Files\Inno Setup 7\ISCC.exe'' windows/Installer/CodexTaskMonitor.iss'
+        run: |
+          $installRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA 'Programs')) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          $iscc = $installRoots |
+            ForEach-Object { Join-Path $_ 'Inno Setup 7\ISCC.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+          if (-not $iscc) { throw 'Inno Setup 7 compiler was not found after installation.' }
+          & $iscc windows/Installer/CodexTaskMonitor.iss
       - name: Hash artifacts
         shell: pwsh
         run: Get-FileHash windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe -Algorithm SHA256 | Format-List
