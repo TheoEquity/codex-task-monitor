@@ -1,6 +1,7 @@
 using CodexTaskMonitor.Core.Data;
 using CodexTaskMonitor.Core.Monitoring;
 using CodexTaskMonitor.Core.Sidebar;
+using System.Text.Json;
 
 namespace CodexTaskMonitor.Tests.Monitoring;
 
@@ -36,6 +37,28 @@ public sealed class TaskMonitorTests
             var item = Assert.Single((await monitor.ScanAsync(Options(), default)).Items);
 
             Assert.Equal("真实项目", item.ProjectName);
+        }
+        finally
+        {
+            File.Delete(rolloutPath);
+            File.Delete(statePath);
+        }
+    }
+
+    [Fact]
+    public async Task Scan_UsesUniqueCwdProjectWhenNoExplicitAssignment()
+    {
+        var rolloutPath = await WriteTemporaryRolloutAsync(Started("turn-1", 101));
+        var projectRoot = Path.Combine(Path.GetTempPath(), $"payment-gateway-{Guid.NewGuid():N}");
+        var statePath = await WriteTemporaryStateAsync(ProjectWithRootState("支付网关", projectRoot));
+        try
+        {
+            var threadCwd = @"\\?\" + projectRoot;
+            var monitor = new TaskMonitor(new FakeThreadStore(Record("thread-1", rolloutPath, threadCwd)), statePath);
+
+            var item = Assert.Single((await monitor.ScanAsync(Options(), default)).Items);
+
+            Assert.Equal("支付网关", item.ProjectName);
         }
         finally
         {
@@ -398,9 +421,12 @@ public sealed class TaskMonitorTests
 
     private static readonly DateTimeOffset Baseline = DateTimeOffset.FromUnixTimeSeconds(100);
 
-    private static ThreadRecord Record(string id, string path) =>
-        new(id, id, @"C:\work", DateTimeOffset.FromUnixTimeSeconds(123), path,
-            new ThreadGroupingInfo(false, null, @"C:\work"));
+    private static ThreadRecord Record(string id, string path, string? cwd = null)
+    {
+        cwd ??= @"C:\work";
+        return new ThreadRecord(id, id, cwd, DateTimeOffset.FromUnixTimeSeconds(123), path,
+            new ThreadGroupingInfo(false, null, cwd));
+    }
 
     private static MonitorScanOptions Options(
         IReadOnlySet<string>? dismissedTurns = null,
@@ -416,6 +442,17 @@ public sealed class TaskMonitorTests
     private static string ProjectState(string projectName) =>
         "{\"thread-project-assignments\":{\"thread-1\":{\"projectId\":\"project-1\"}}," +
         "\"local-projects\":{\"project-1\":{\"name\":\"" + projectName + "\"}}}";
+
+    private static string ProjectWithRootState(string projectName, string projectRoot) =>
+        JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["thread-project-assignments"] = new Dictionary<string, object>(),
+            ["projectless-thread-ids"] = Array.Empty<string>(),
+            ["local-projects"] = new Dictionary<string, object>
+            {
+                ["project-1"] = new { name = projectName, rootPaths = new[] { projectRoot } }
+            }
+        });
 
     private static string SameLengthRollout(string lifecycleLine, long length)
     {
