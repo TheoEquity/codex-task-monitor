@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodexTaskMonitor.Core.Data;
 
 namespace CodexTaskMonitor.Core.Monitoring;
@@ -6,17 +7,31 @@ public sealed class TaskMonitor : ITaskMonitor
 {
     private const int TailReadBufferSize = 64 * 1024;
     private readonly IThreadStore threadStore;
+    private readonly string? globalStatePath;
     private readonly Action<string>? afterSignatureCaptured;
     private readonly Dictionary<string, CacheEntry> cache = new(StringComparer.OrdinalIgnoreCase);
+    private ProjectGrouping? cachedProjectGrouping;
+    private FileSignature? cachedProjectSignature;
 
     public TaskMonitor(IThreadStore threadStore)
-        : this(threadStore, null)
+        : this(threadStore, null, null)
+    {
+    }
+
+    public TaskMonitor(IThreadStore threadStore, string globalStatePath)
+        : this(threadStore, globalStatePath, null)
     {
     }
 
     internal TaskMonitor(IThreadStore threadStore, Action<string>? afterSignatureCaptured)
+        : this(threadStore, null, afterSignatureCaptured)
+    {
+    }
+
+    private TaskMonitor(IThreadStore threadStore, string? globalStatePath, Action<string>? afterSignatureCaptured)
     {
         this.threadStore = threadStore;
+        this.globalStatePath = globalStatePath;
         this.afterSignatureCaptured = afterSignatureCaptured;
     }
 
@@ -37,8 +52,9 @@ public sealed class TaskMonitor : ITaskMonitor
         var threads = await threadStore.ReadThreadsAsync(options.Baseline.AddHours(-1), cancellationToken);
         EvictCacheEntriesNotReferencedBy(threads);
         var (events, unreadable) = await LatestEventsAsync(threads, cancellationToken);
+        var projectGrouping = await ReadProjectGroupingAsync(cancellationToken);
         var items = events.Values
-            .Select(pair => ToMonitorItem(pair, options))
+            .Select(pair => ToMonitorItem(pair, projectGrouping, options))
             .OfType<MonitorItem>()
             .OrderByDescending(item => item.EventDate)
             .ToArray();
@@ -46,7 +62,10 @@ public sealed class TaskMonitor : ITaskMonitor
         return new MonitorScanResult(items, unreadable);
     }
 
-    private static MonitorItem? ToMonitorItem(ThreadEvent pair, MonitorScanOptions options)
+    private static MonitorItem? ToMonitorItem(
+        ThreadEvent pair,
+        ProjectGrouping projectGrouping,
+        MonitorScanOptions options)
     {
         var state = TaskStateResolver.Resolve(
             pair.Event,
@@ -56,13 +75,12 @@ public sealed class TaskMonitor : ITaskMonitor
         if (state is null)
             return null;
 
-        var projectName = Path.GetFileName(pair.Thread.Cwd.TrimEnd(Path.DirectorySeparatorChar));
         var item = new MonitorItem(
             pair.Thread.Id,
             pair.Event.TurnId,
             string.IsNullOrEmpty(pair.Thread.Title) ? "New chat" : pair.Thread.Title,
             pair.Thread.Cwd,
-            projectName,
+            projectGrouping.ProjectNameFor(pair.Thread) ?? "没项目",
             pair.Event.ActivityDate,
             state.Value,
             pair.Event.Kind switch
@@ -72,6 +90,115 @@ public sealed class TaskMonitor : ITaskMonitor
                 _ => null
             });
         return options.DismissedItemIds.Contains(item.Id) ? null : item;
+    }
+
+    private async Task<ProjectGrouping> ReadProjectGroupingAsync(CancellationToken cancellationToken)
+    {
+        if (globalStatePath is null)
+            return ProjectGrouping.Empty;
+        try
+        {
+            var info = new FileInfo(globalStatePath);
+            info.Refresh();
+            var signature = FileSignature.From(info);
+            if (cachedProjectGrouping is not null && cachedProjectSignature == signature)
+                return cachedProjectGrouping;
+
+            var state = await File.ReadAllBytesAsync(globalStatePath, cancellationToken);
+            using var document = JsonDocument.Parse(state);
+            var root = document.RootElement;
+            var projectNames = new Dictionary<string, string>(StringComparer.Ordinal);
+            var cwdProjectNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var ambiguousCwds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (root.TryGetProperty("local-projects", out var projects) &&
+                projects.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var projectProperty in projects.EnumerateObject())
+                {
+                    var project = projectProperty.Value;
+                    if (project.ValueKind != JsonValueKind.Object ||
+                        !project.TryGetProperty("name", out var name) ||
+                        name.ValueKind != JsonValueKind.String ||
+                        string.IsNullOrWhiteSpace(name.GetString()))
+                        continue;
+
+                    var projectName = name.GetString()!;
+                    projectNames[projectProperty.Name] = projectName;
+                    if (!project.TryGetProperty("rootPaths", out var roots) || roots.ValueKind != JsonValueKind.Array)
+                        continue;
+
+                    foreach (var rootPath in roots.EnumerateArray())
+                    {
+                        if (rootPath.ValueKind != JsonValueKind.String ||
+                            NormalizePath(rootPath.GetString()!) is not { } normalizedRoot)
+                            continue;
+
+                        if (!cwdProjectNames.TryAdd(normalizedRoot, projectName))
+                            ambiguousCwds.Add(normalizedRoot);
+                    }
+                }
+            }
+
+            foreach (var ambiguousCwd in ambiguousCwds)
+                cwdProjectNames.Remove(ambiguousCwd);
+
+            var threadProjectNames = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("thread-project-assignments", out var assignments) &&
+                assignments.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var assignment in assignments.EnumerateObject())
+                {
+                    if (assignment.Value.ValueKind == JsonValueKind.Object &&
+                        assignment.Value.TryGetProperty("projectId", out var projectId) &&
+                        projectId.ValueKind == JsonValueKind.String &&
+                        projectNames.TryGetValue(projectId.GetString()!, out var projectName))
+                        threadProjectNames[assignment.Name] = projectName;
+                }
+            }
+
+            var projectlessThreadIds = new HashSet<string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("projectless-thread-ids", out var projectless) &&
+                projectless.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var threadId in projectless.EnumerateArray())
+                {
+                    if (threadId.ValueKind == JsonValueKind.String)
+                        projectlessThreadIds.Add(threadId.GetString()!);
+                }
+            }
+
+            var result = new ProjectGrouping(threadProjectNames, projectlessThreadIds, cwdProjectNames);
+            cachedProjectGrouping = result;
+            cachedProjectSignature = signature;
+            return result;
+        }
+        catch (Exception error) when (
+            cachedProjectGrouping is not null &&
+            error is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return cachedProjectGrouping;
+        }
+    }
+
+    private static string? NormalizePath(string path)
+    {
+        try
+        {
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                path = @"\\" + path[8..];
+            else if (path.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                path = path[4..];
+
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
     }
 
     private async Task<(Dictionary<string, ThreadEvent> Events, int Unreadable)> LatestEventsAsync(
@@ -262,6 +389,28 @@ public sealed class TaskMonitor : ITaskMonitor
         long SnapshotSize,
         long ProcessedSize,
         byte[] TrailingFragment);
+
+    private sealed record ProjectGrouping(
+        IReadOnlyDictionary<string, string> ThreadProjectNames,
+        IReadOnlySet<string> ProjectlessThreadIds,
+        IReadOnlyDictionary<string, string> CwdProjectNames)
+    {
+        public static ProjectGrouping Empty { get; } = new(
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+        public string? ProjectNameFor(ThreadRecord thread)
+        {
+            if (ThreadProjectNames.TryGetValue(thread.Id, out var projectName))
+                return projectName;
+            if (ProjectlessThreadIds.Contains(thread.Id))
+                return null;
+
+            var cwd = NormalizePath(thread.Cwd);
+            return cwd is not null && CwdProjectNames.TryGetValue(cwd, out projectName) ? projectName : null;
+        }
+    }
 
     private readonly record struct FileSignature(DateTime LastWriteTimeUtc, DateTime CreationTimeUtc, long Length)
     {

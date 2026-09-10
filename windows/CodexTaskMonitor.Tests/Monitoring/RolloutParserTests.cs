@@ -23,6 +23,22 @@ public sealed class RolloutParserTests
     }
 
     [Fact]
+    public void CompletedTurnWithoutStartedAt_ReusesMatchingStart()
+    {
+        var data = Encoding.UTF8.GetBytes("""
+            {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":101}}
+            {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":102}}
+
+            """);
+
+        var item = RolloutParser.LatestAfter(null, data);
+
+        Assert.Equal(LifecycleKind.Completed, item!.Kind);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(101), item.StartedAt);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(102), item.CompletedAt);
+    }
+
+    [Fact]
     public void AbortedTurnWithoutCompletedAt_UsesRootTimestamp()
     {
         var data = Encoding.UTF8.GetBytes(

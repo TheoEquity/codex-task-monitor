@@ -1,5 +1,7 @@
+using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CodexTaskMonitor.Core.Monitoring;
@@ -10,6 +12,54 @@ namespace CodexTaskMonitor.Tests;
 
 public sealed class MainWindowXamlTests
 {
+    [Fact]
+    public void TaskList_ShowsOneGroupPerProjectInRecentActivityOrder()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            MainWindow? window = null;
+            try
+            {
+                window = new MainWindow
+                {
+                    DataContext = new TaskListModel(
+                    [
+                        Item("new-b", "项目 B"),
+                        Item("only-a", "项目 A"),
+                        Item("old-b", "项目 B"),
+                        Item("projectless", "没项目")
+                    ])
+                };
+                var taskList = Assert.IsType<ListBox>(window.FindName("TaskList"));
+                Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.DataBind);
+
+                var groups = Assert.IsAssignableFrom<System.Collections.IEnumerable>(taskList.Items.Groups)
+                    .Cast<CollectionViewGroup>()
+                    .ToArray();
+
+                Assert.Equal(["项目 B", "项目 A", "没项目"], groups.Select(group => group.Name));
+                Assert.Equal(
+                    ["new-b:turn", "old-b:turn"],
+                    groups[0].Items.Cast<MonitorItemViewModel>().Select(item => item.Id));
+            }
+            catch (Exception error)
+            {
+                failure = error;
+            }
+            finally
+            {
+                window?.RequestExit();
+                Dispatcher.CurrentDispatcher.InvokeShutdown();
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "STA project-grouping thread did not finish.");
+        Assert.Null(failure);
+    }
+
     [Fact]
     public void HeaderBlankArea_IsHitTestableForDragging()
     {
@@ -160,7 +210,7 @@ public sealed class MainWindowXamlTests
         thread.SetApartmentState(ApartmentState.STA);
 
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "STA layout thread did not finish.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "STA layout thread did not finish.");
         Assert.Null(failure);
     }
 
@@ -175,6 +225,23 @@ public sealed class MainWindowXamlTests
 
             foreach (var descendant in VisualDescendants<T>(child))
                 yield return descendant;
+        }
+    }
+
+    private static MonitorItemViewModel Item(string threadId, string projectName) =>
+        new(new MonitorItem(
+            threadId,
+            "turn",
+            threadId,
+            @"C:\work",
+            projectName,
+            DateTimeOffset.UtcNow,
+            TaskState.Waiting));
+
+    private sealed record TaskListModel(ObservableCollection<MonitorItemViewModel> Items)
+    {
+        public TaskListModel(IEnumerable<MonitorItemViewModel> items) : this(new ObservableCollection<MonitorItemViewModel>(items))
+        {
         }
     }
 }

@@ -113,7 +113,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<MonitorItemViewModel> Items { get; } = [];
     public string? ErrorMessage => actionErrorMessage ?? scanErrorMessage ?? barkErrorMessage;
     public bool HasError => ErrorMessage is not null;
-    public double PanelHeight => MonitorPanelLayout.Height(Items.Count, HasError);
+    public double PanelHeight => MonitorPanelLayout.Height(
+        Items.Count,
+        HasError,
+        Items.Select(item => item.ProjectName).Distinct(StringComparer.Ordinal).Count());
     public double? SavedWindowLeft => preferences.WindowLeft;
     public double? SavedWindowTop => preferences.WindowTop;
     public bool IsStartupEnabled => preferences.LaunchAtLoginEnabled ?? startup.IsEnabled;
