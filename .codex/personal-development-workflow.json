@@ -1,0 +1,6 @@
+{
+  "database": "~/.codex/personal-development-workflow.sqlite",
+  "repositories": {
+    "codex-task-monitor": ".."
+  }
+}
