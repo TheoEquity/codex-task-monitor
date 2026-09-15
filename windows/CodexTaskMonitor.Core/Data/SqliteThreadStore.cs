@@ -33,6 +33,7 @@ public sealed class SqliteThreadStore(string databasePath) : IThreadStore, IThre
                         COALESCE(t.thread_source, 'user') = 'user'
                         OR (t.thread_source = 'subagent' AND t.source = 'vscode')
                         OR (t.thread_source = 'agent_forked_thread' AND t.source = 'vscode')
+                        OR (t.thread_source = 'agent_created_thread' AND t.source = 'vscode')
                       )
                   AND t.updated_at_ms >= $updatedAfter
                 ORDER BY t.updated_at_ms DESC;
