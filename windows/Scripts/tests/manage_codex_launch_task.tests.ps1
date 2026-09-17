@@ -30,17 +30,34 @@ Assert-True ($arguments.IndexOf('-Mode Launch', [StringComparison]::Ordinal) -ge
 Assert-True ($arguments.IndexOf(('"' + $scriptPath + '"'), [StringComparison]::Ordinal) -ge 0) 'script path'
 Assert-True ($arguments.IndexOf(('"' + $executablePath + '"'), [StringComparison]::Ordinal) -ge 0) 'executable path'
 
+$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+Assert-Equal $currentSid (Resolve-UserSid ([Security.Principal.WindowsIdentity]::GetCurrent().Name)) 'qualified account SID resolution'
+Assert-Equal $currentSid (Resolve-UserSid $env:USERNAME) 'account SID resolution'
 $script:registeredTaskName = $null
+$script:legacyTaskRemoved = $null
 Register-CodexLaunchTask `
     -ScriptPath $scriptPath `
     -ExecutablePath $executablePath `
-    -RegisterTask { param([string]$TaskName, [string]$TaskXml) $script:registeredTaskName = $TaskName }
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    -RegisterTask { param([string]$TaskName, [string]$TaskXml) $script:registeredTaskName = $TaskName } `
+    -GetTaskUserSid { param([string]$TaskName) $currentSid } `
+    -UnregisterTask { param([string]$TaskName) $script:legacyTaskRemoved = $TaskName }
 Assert-Equal "CodexTaskMonitor-OnCodexLaunch-$currentSid" $script:registeredTaskName 'per-user registration name'
+Assert-Equal 'CodexTaskMonitor-OnCodexLaunch' $script:legacyTaskRemoved 'legacy task removed during registration'
 
-$script:unregisteredTaskName = $null
-Unregister-CodexLaunchTask -UnregisterTask { param([string]$TaskName) $script:unregisteredTaskName = $TaskName }
-Assert-Equal "CodexTaskMonitor-OnCodexLaunch-$currentSid" $script:unregisteredTaskName 'per-user unregistration name'
+$script:unregisteredTaskNames = @()
+Unregister-CodexLaunchTask `
+    -GetTaskUserSid { param([string]$TaskName) $currentSid } `
+    -UnregisterTask { param([string]$TaskName) $script:unregisteredTaskNames += $TaskName }
+Assert-Equal "CodexTaskMonitor-OnCodexLaunch-$currentSid|CodexTaskMonitor-OnCodexLaunch" ($script:unregisteredTaskNames -join '|') 'unregistration names'
+
+$script:otherUsersLegacyTaskRemoved = $false
+Register-CodexLaunchTask `
+    -ScriptPath $scriptPath `
+    -ExecutablePath $executablePath `
+    -RegisterTask { param([string]$TaskName, [string]$TaskXml) } `
+    -GetTaskUserSid { param([string]$TaskName) 'S-1-5-21-9999' } `
+    -UnregisterTask { param([string]$TaskName) $script:otherUsersLegacyTaskRemoved = $true }
+Assert-True (-not $script:otherUsersLegacyTaskRemoved) 'other user legacy task preserved'
 
 $missingRunValue = Read-CodexMonitorRunValue -ValueName "CodexTaskMonitor-Missing-$([Guid]::NewGuid().ToString('N'))"
 Assert-True ($null -eq $missingRunValue) 'missing Run value is a successful no-op'

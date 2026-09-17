@@ -15,6 +15,21 @@ function Get-CodexLaunchTaskName([string]$UserSid) {
     return "$script:CodexLaunchTaskPrefix-$UserSid"
 }
 
+function Resolve-UserSid([string]$Identity) {
+    if ([string]::IsNullOrWhiteSpace($Identity)) { return $null }
+    try {
+        if ($Identity.StartsWith('S-1-', [StringComparison]::OrdinalIgnoreCase)) {
+            return ([Security.Principal.SecurityIdentifier]$Identity).Value
+        }
+        return ([Security.Principal.NTAccount]::new($Identity)).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+    catch {
+        return $null
+    }
+}
+
 function ConvertTo-TaskXmlText([string]$Value) {
     return [Security.SecurityElement]::Escape($Value)
 }
@@ -87,10 +102,41 @@ function New-CodexLaunchTaskXml(
 "@
 }
 
+function Remove-LegacyCodexLaunchTask(
+    [string]$UserSid,
+    [scriptblock]$GetTaskUserSid,
+    [scriptblock]$UnregisterTask
+) {
+    if ($null -eq $GetTaskUserSid) {
+        $GetTaskUserSid = {
+            param([string]$TaskName)
+            $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            if ($null -eq $task) { return $null }
+            return Resolve-UserSid $task.Principal.UserId
+        }
+    }
+    if ($null -eq $UnregisterTask) {
+        $UnregisterTask = {
+            param([string]$TaskName)
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    }
+
+    $legacyTaskUserSid = & $GetTaskUserSid $script:CodexLaunchTaskPrefix
+    if (-not [string]::Equals($legacyTaskUserSid, $UserSid, [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    & $UnregisterTask $script:CodexLaunchTaskPrefix
+    return $true
+}
+
 function Register-CodexLaunchTask(
     [string]$ScriptPath,
     [string]$ExecutablePath,
-    [scriptblock]$RegisterTask
+    [scriptblock]$RegisterTask,
+    [scriptblock]$GetTaskUserSid,
+    [scriptblock]$UnregisterTask
 ) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $xml = New-CodexLaunchTaskXml -ScriptPath $ScriptPath -ExecutablePath $ExecutablePath -UserSid $sid
@@ -103,9 +149,16 @@ function Register-CodexLaunchTask(
     }
 
     & $RegisterTask $taskName $xml
+    [void](Remove-LegacyCodexLaunchTask `
+        -UserSid $sid `
+        -GetTaskUserSid $GetTaskUserSid `
+        -UnregisterTask $UnregisterTask)
 }
 
-function Unregister-CodexLaunchTask([scriptblock]$UnregisterTask) {
+function Unregister-CodexLaunchTask(
+    [scriptblock]$UnregisterTask,
+    [scriptblock]$GetTaskUserSid
+) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $taskName = Get-CodexLaunchTaskName $sid
     if ($null -eq $UnregisterTask) {
@@ -116,6 +169,10 @@ function Unregister-CodexLaunchTask([scriptblock]$UnregisterTask) {
     }
 
     & $UnregisterTask $taskName
+    [void](Remove-LegacyCodexLaunchTask `
+        -UserSid $sid `
+        -GetTaskUserSid $GetTaskUserSid `
+        -UnregisterTask $UnregisterTask)
 }
 
 function Read-CodexMonitorRunValue([string]$ValueName = 'CodexTaskMonitor') {
