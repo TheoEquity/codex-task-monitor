@@ -99,8 +99,12 @@ foreach ($expectedValue in @(
     'ArchitecturesInstallIn64BitMode=x64compatible',
     'Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs',
     'Source: "..\Scripts\provision_bark.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion',
+    'Source: "..\Scripts\manage_codex_launch_task.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion',
     'Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"',
     'Flags: uninsdeletevalue',
+    '-Mode Register -ExecutablePath ""{app}\{#MyAppExeName}""',
+    '-Mode Unregister',
+    'RunOnceId: "UnregisterCodexLaunchTask"',
     "RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'CodexTaskMonitor');"
 )) {
     Assert-Contains $installer $expectedValue $installerPath
@@ -151,6 +155,7 @@ foreach ($expectedRun in @(
     'dotnet restore windows/CodexTaskMonitor.sln',
     'dotnet test windows/CodexTaskMonitor.sln -c Release --no-restore --logger "trx;LogFileName=windows-tests.trx"',
     'powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/tests/provision_bark.tests.ps1',
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File windows/Scripts/tests/manage_codex_launch_task.tests.ps1',
     'dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj -c Release -r win-x64 --self-contained true --no-restore -o windows/publish/win-x64',
     'winget install --exact --id JRSoftware.InnoSetup.7 --version 7.1.0 --source winget --silent --accept-source-agreements --accept-package-agreements'
 )) {

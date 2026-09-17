@@ -35,11 +35,11 @@ do not record task titles, thread IDs, prompts, rollout content, or user paths.
   - Evidence: Not yet recorded. Use a controlled missing mapping and confirm the warning.
 - [ ] Closing/restarting Codex during reveal ends with a bounded warning, not continued scrolling.
   - Evidence: Not yet recorded. Close or restart during an offscreen reveal and observe the bounded result.
-- [ ] Login startup survives reboot; disabling it removes the HKCU Run value.
-  - Evidence: The Run value can be inspected without UI interaction; reboot survival remains unverified until a real reboot. After testing the toggle, inspect `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the fixed value name `CodexTaskMonitor`.
+- [ ] Login startup survives reboot; when the monitor is absent, launching Codex starts it; disabling startup removes the HKCU Run value and makes the Codex launch task a no-op.
+  - Evidence: The Run value and the current-user `CodexTaskMonitor-OnCodexLaunch` task can be inspected without UI interaction; reboot survival and a real Codex relaunch remain manual checks. After testing the toggle, inspect `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the fixed value name `CodexTaskMonitor`.
 - [ ] Upgrade preserves handled-item settings.
   - Evidence: Not yet recorded. Handle an item, install a newer package, and confirm the same item remains handled.
-- [ ] Uninstall removes program files and the HKCU Run value while leaving local settings/logs.
+- [ ] Uninstall removes program files, the HKCU Run value, and the Codex launch task while leaving local settings/logs.
   - Evidence: Program-file removal and the fixed Run-value name can be checked automatically; preservation of existing settings/logs requires pre-existing, non-sensitive test data and remains unverified.
 - [ ] Logs contain categories/counts/timings only and no task title or prompt text.
   - Evidence: Not yet recorded. Inspect generated logs for the fixed schema only, without copying log content into this file.

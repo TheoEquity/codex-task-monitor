@@ -30,6 +30,7 @@ Name: "startup"; Description: "登录 Windows 时启动"; GroupDescription: "其
 [Files]
 Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\Scripts\provision_bark.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion
+Source: "..\Scripts\manage_codex_launch_task.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -38,7 +39,11 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "CodexTaskMonitor"; ValueData: """{app}\{#MyAppExeName}"""; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\Scripts\manage_codex_launch_task.ps1"" -Mode Register -ExecutablePath ""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\Scripts\manage_codex_launch_task.ps1"" -Mode Unregister"; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterCodexLaunchTask"
 
 [Code]
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -9,7 +9,7 @@
 - 超过 6 个任务时固定窗口高度并显示滚动条。
 - 点击任务会打开对应 Codex 正文，并把 Codex 侧栏滚动到对应任务。
 - 点击“已处理”只移除对应任务。
-- 自动注册为登录时启动。
+- Windows 可注册为登录时启动，并在监视器未运行时随 Codex 桌面应用启动；macOS 注册为登录项。
 
 ## 要求（macOS）
 
@@ -51,7 +51,8 @@ dotnet publish windows/CodexTaskMonitor.Windows/CodexTaskMonitor.Windows.csproj 
 The resulting per-user installer is
 `windows/artifacts/Codex-Task-Monitor-Windows-x64-Setup.exe`. It installs without elevation to
 the current user's local application directory and includes the .NET runtime required by the
-application.
+application. When login startup is enabled, a current-user event task also starts the monitor when
+the OpenAI Codex desktop app launches. Disabling login startup suppresses both launch paths.
 
 ### Optional Bark notifications
 
