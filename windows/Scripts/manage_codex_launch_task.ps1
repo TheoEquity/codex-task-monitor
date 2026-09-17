@@ -8,7 +8,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$script:CodexLaunchTaskName = 'CodexTaskMonitor-OnCodexLaunch'
+$script:CodexLaunchTaskPrefix = 'CodexTaskMonitor-OnCodexLaunch'
+
+function Get-CodexLaunchTaskName([string]$UserSid) {
+    if ([string]::IsNullOrWhiteSpace($UserSid)) { throw 'UserSid cannot be empty.' }
+    return "$script:CodexLaunchTaskPrefix-$UserSid"
+}
 
 function ConvertTo-TaskXmlText([string]$Value) {
     return [Security.SecurityElement]::Escape($Value)
@@ -36,12 +41,13 @@ function New-CodexLaunchTaskXml(
     $escapedPowerShell = ConvertTo-TaskXmlText $powerShellPath
     $escapedArguments = ConvertTo-TaskXmlText $arguments
     $escapedSubscription = ConvertTo-TaskXmlText $subscription
+    $taskName = Get-CodexLaunchTaskName $UserSid
     return @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Starts Codex Task Monitor when the OpenAI Codex desktop app starts.</Description>
-    <URI>\$script:CodexLaunchTaskName</URI>
+    <URI>\$taskName</URI>
   </RegistrationInfo>
   <Triggers>
     <EventTrigger>
@@ -88,6 +94,7 @@ function Register-CodexLaunchTask(
 ) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $xml = New-CodexLaunchTaskXml -ScriptPath $ScriptPath -ExecutablePath $ExecutablePath -UserSid $sid
+    $taskName = Get-CodexLaunchTaskName $sid
     if ($null -eq $RegisterTask) {
         $RegisterTask = {
             param([string]$TaskName, [string]$TaskXml)
@@ -95,10 +102,12 @@ function Register-CodexLaunchTask(
         }
     }
 
-    & $RegisterTask $script:CodexLaunchTaskName $xml
+    & $RegisterTask $taskName $xml
 }
 
 function Unregister-CodexLaunchTask([scriptblock]$UnregisterTask) {
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $taskName = Get-CodexLaunchTaskName $sid
     if ($null -eq $UnregisterTask) {
         $UnregisterTask = {
             param([string]$TaskName)
@@ -106,7 +115,16 @@ function Unregister-CodexLaunchTask([scriptblock]$UnregisterTask) {
         }
     }
 
-    & $UnregisterTask $script:CodexLaunchTaskName
+    & $UnregisterTask $taskName
+}
+
+function Read-CodexMonitorRunValue([string]$ValueName = 'CodexTaskMonitor') {
+    $item = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+        -Name $ValueName -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $null }
+    $property = $item.PSObject.Properties[$ValueName]
+    if ($null -eq $property) { return $null }
+    return $property.Value
 }
 
 function ConvertTo-NormalizedPath([string]$Value) {
@@ -128,10 +146,7 @@ function Invoke-CodexLaunch(
 ) {
     if ([string]::IsNullOrWhiteSpace($ExecutablePath)) { throw 'ExecutablePath is required.' }
     if ($null -eq $ReadRunValue) {
-        $ReadRunValue = {
-            (Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
-                -Name CodexTaskMonitor -ErrorAction SilentlyContinue).CodexTaskMonitor
-        }
+        $ReadRunValue = { Read-CodexMonitorRunValue }
     }
     if ($null -eq $IsRunning) {
         $IsRunning = {
