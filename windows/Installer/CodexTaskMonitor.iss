@@ -31,6 +31,7 @@ Name: "startup"; Description: "登录 Windows 时启动"; GroupDescription: "其
 Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\Scripts\provision_bark.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion
 Source: "..\Scripts\manage_codex_launch_task.ps1"; DestDir: "{app}\Scripts"; Flags: ignoreversion
+Source: "..\Scripts\launch_codex_monitor_hidden.vbs"; DestDir: "{app}\Scripts"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

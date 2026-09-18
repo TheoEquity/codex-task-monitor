@@ -12,6 +12,7 @@ function Assert-True([bool]$Value, [string]$Name) {
 
 $applicationDirectory = Join-Path $env:SystemDrive 'Apps\Codex Task Monitor'
 $scriptPath = Join-Path $applicationDirectory 'Scripts\manage_codex_launch_task.ps1'
+$launcherPath = Join-Path $applicationDirectory 'Scripts\launch_codex_monitor_hidden.vbs'
 $executablePath = Join-Path $applicationDirectory 'CodexTaskMonitor.exe'
 $sid = 'S-1-5-21-1000'
 $xmlText = New-CodexLaunchTaskXml -ScriptPath $scriptPath -ExecutablePath $executablePath -UserSid $sid
@@ -25,8 +26,11 @@ Assert-Equal "\CodexTaskMonitor-OnCodexLaunch-$sid" $xml.SelectSingleNode('/t:Ta
 $subscription = $xml.SelectSingleNode('/t:Task/t:Triggers/t:EventTrigger/t:Subscription', $namespace).InnerText
 Assert-True ($subscription.IndexOf('EventID=201', [StringComparison]::Ordinal) -ge 0) 'launch event id'
 Assert-True ($subscription.IndexOf("Data[@Name='ApplicationName']='OpenAI.Codex_2p2nqsd0c76g0!App'", [StringComparison]::Ordinal) -ge 0) 'Codex application filter'
+$command = $xml.SelectSingleNode('/t:Task/t:Actions/t:Exec/t:Command', $namespace).InnerText
 $arguments = $xml.SelectSingleNode('/t:Task/t:Actions/t:Exec/t:Arguments', $namespace).InnerText
-Assert-True ($arguments.IndexOf('-Mode Launch', [StringComparison]::Ordinal) -ge 0) 'launch mode'
+Assert-Equal (Join-Path $env:SystemRoot 'System32\wscript.exe') $command 'windowless task host'
+Assert-True ($arguments.IndexOf('//B //NoLogo', [StringComparison]::Ordinal) -ge 0) 'windowless host options'
+Assert-True ($arguments.IndexOf(('"' + $launcherPath + '"'), [StringComparison]::Ordinal) -ge 0) 'windowless launcher path'
 Assert-True ($arguments.IndexOf(('"' + $scriptPath + '"'), [StringComparison]::Ordinal) -ge 0) 'script path'
 Assert-True ($arguments.IndexOf(('"' + $executablePath + '"'), [StringComparison]::Ordinal) -ge 0) 'executable path'
 

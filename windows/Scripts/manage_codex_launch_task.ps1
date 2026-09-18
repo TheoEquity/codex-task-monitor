@@ -43,9 +43,9 @@ function New-CodexLaunchTaskXml(
         if ([string]::IsNullOrWhiteSpace($value)) { throw 'Task registration values cannot be empty.' }
     }
 
-    $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass ' +
-        '-File "' + $ScriptPath + '" -Mode Launch -ExecutablePath "' + $ExecutablePath + '"'
+    $windowlessHostPath = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $launcherPath = Join-Path (Split-Path -Parent $ScriptPath) 'launch_codex_monitor_hidden.vbs'
+    $arguments = '//B //NoLogo "' + $launcherPath + '" "' + $ScriptPath + '" "' + $ExecutablePath + '"'
     $subscription = "<QueryList><Query Id='0' Path='Microsoft-Windows-AppModel-Runtime/Admin'>" +
         "<Select Path='Microsoft-Windows-AppModel-Runtime/Admin'>" +
         "*[System[Provider[@Name='Microsoft-Windows-AppModel-Runtime'] and EventID=201] and " +
@@ -53,7 +53,7 @@ function New-CodexLaunchTaskXml(
         '</Select></Query></QueryList>'
 
     $escapedSid = ConvertTo-TaskXmlText $UserSid
-    $escapedPowerShell = ConvertTo-TaskXmlText $powerShellPath
+    $escapedWindowlessHost = ConvertTo-TaskXmlText $windowlessHostPath
     $escapedArguments = ConvertTo-TaskXmlText $arguments
     $escapedSubscription = ConvertTo-TaskXmlText $subscription
     $taskName = Get-CodexLaunchTaskName $UserSid
@@ -94,7 +94,7 @@ function New-CodexLaunchTaskXml(
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$escapedPowerShell</Command>
+      <Command>$escapedWindowlessHost</Command>
       <Arguments>$escapedArguments</Arguments>
     </Exec>
   </Actions>
